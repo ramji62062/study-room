@@ -64,6 +64,10 @@ export function useStudyRealtime({
     mode: "focus",
   });
   const [roomMode, setRoomMode] = useState<"silent" | "discussion">("silent");
+  const [sceneState, setSceneState] = useState<{ sceneId: string; isShared: boolean }>({
+    sceneId: "night-library",
+    isShared: false,
+  });
 
   const socketRef = useRef<Socket | null>(null);
   const offlineQueueRef = useRef<StudyChatMessage[]>([]);
@@ -171,6 +175,12 @@ export function useStudyRealtime({
             if (res.mode) {
               setRoomMode(res.mode);
             }
+            if (res.sceneState) {
+              setSceneState({
+                sceneId: res.sceneState.sceneId || "night-library",
+                isShared: Boolean(res.sceneState.isShared),
+              });
+            }
             if (Array.isArray(res.messages)) {
               setMessages(
                 res.messages.map((m: any) => ({ ...m, status: "sent" }))
@@ -193,6 +203,15 @@ export function useStudyRealtime({
     socket.on("study:members-update", (updatedMembers: StudyMember[]) => {
       if (Array.isArray(updatedMembers)) {
         setMembers(updatedMembers);
+      }
+    });
+
+    socket.on("study:scene-update", (serverScene: { sceneId: string; isShared: boolean }) => {
+      if (serverScene) {
+        setSceneState({
+          sceneId: serverScene.sceneId || "night-library",
+          isShared: Boolean(serverScene.isShared),
+        });
       }
     });
 
@@ -407,12 +426,22 @@ export function useStudyRealtime({
     [roomId]
   );
 
+  // Update Shared Scene
+  const updateScene = useCallback(
+    (sceneId: string, isShared: boolean) => {
+      setSceneState({ sceneId, isShared });
+      socketRef.current?.emit("study:scene-set", { roomId, sceneId, isShared, userId });
+    },
+    [roomId, userId]
+  );
+
   return {
     connectionState,
     members,
     messages,
     timerState,
     roomMode,
+    sceneState,
     sendMessage,
     retryMessage,
     startTimer,
@@ -421,5 +450,6 @@ export function useStudyRealtime({
     setTimerPreset,
     updateMyStatus,
     toggleRoomMode,
+    updateScene,
   };
 }

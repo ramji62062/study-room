@@ -23,6 +23,7 @@ class StudyRoomService {
     this.messages = new Map(); // roomId -> Array<{ id, userId, userName, body, createdAt }>
     this.members = new Map(); // roomId -> Map(socketId -> { userId, name, status, lastPing })
     this.modes = new Map(); // roomId -> 'silent' | 'discussion'
+    this.scenes = new Map(); // roomId -> { sceneId, isShared }
     this.supabaseAdmin = null;
 
     // Start stale presence check interval (removes abandoned connections after 35s)
@@ -31,6 +32,55 @@ class StudyRoomService {
 
   setSupabaseAdmin(adminClient) {
     this.supabaseAdmin = adminClient;
+  }
+
+  async getRoomScene(roomId) {
+    let s = this.scenes.get(roomId);
+    if (!s && this.supabaseAdmin) {
+      try {
+        const { data } = await this.supabaseAdmin
+          .from("rooms")
+          .select("scene_id, scene_shared")
+          .or(`id.eq.${roomId},room_code.eq.${roomId}`)
+          .maybeSingle();
+        if (data) {
+          s = {
+            sceneId: data.scene_id || "night-library",
+            isShared: Boolean(data.scene_shared),
+          };
+          this.scenes.set(roomId, s);
+        }
+      } catch (_) {}
+    }
+    if (!s) {
+      s = { sceneId: "night-library", isShared: false };
+      this.scenes.set(roomId, s);
+    }
+    return s;
+  }
+
+  async setRoomScene(roomId, { sceneId, isShared, userId }) {
+    let current = await this.getRoomScene(roomId);
+    const updated = {
+      sceneId: typeof sceneId === "string" ? sceneId : current.sceneId,
+      isShared: typeof isShared === "boolean" ? isShared : current.isShared,
+    };
+    this.scenes.set(roomId, updated);
+
+    if (this.supabaseAdmin) {
+      try {
+        await this.supabaseAdmin
+          .from("rooms")
+          .update({
+            scene_id: updated.sceneId,
+            scene_shared: updated.isShared,
+          })
+          .or(`id.eq.${roomId},room_code.eq.${roomId}`);
+      } catch (err) {
+        console.warn("[StudyService] Scene update warning:", err.message);
+      }
+    }
+    return updated;
   }
 
   getTimerState(roomId) {
@@ -277,6 +327,7 @@ class StudyRoomService {
         const members = this.getMembers(roomId);
         const mode = this.getRoomMode(roomId);
         const messages = await this.getMessages(roomId);
+        const sceneState = await this.getRoomScene(roomId);
 
         // Notify other room members about presence update
         socket.to(`study:${roomId}`).emit("study:members-update", members);
@@ -287,9 +338,24 @@ class StudyRoomService {
           members,
           mode,
           messages,
+          sceneState,
         });
       } catch (err) {
         console.error("[StudyService] Join error:", err);
+        callback({ success: false, error: err.message });
+      }
+    });
+
+    socket.on("study:scene-set", async (payload = {}, callback = () => {}) => {
+      try {
+        const roomId = socket.data.studyRoomId || String(payload.roomId || "");
+        if (!roomId) return callback({ success: false, error: "No room" });
+
+        const updated = await this.setRoomScene(roomId, payload);
+        // Broadcast to everyone in the room
+        io.to(`study:${roomId}`).emit("study:scene-update", updated);
+        callback({ success: true, sceneState: updated });
+      } catch (err) {
         callback({ success: false, error: err.message });
       }
     });
