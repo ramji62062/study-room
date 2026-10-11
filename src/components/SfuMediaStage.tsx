@@ -25,6 +25,8 @@ interface SfuMediaStageProps {
   cameraOn: boolean;
   screenOn: boolean;
   localVideoStream?: MediaStream;
+  localCameraStream?: MediaStream;
+  localScreenStream?: MediaStream;
   currentUserId: string;
   currentUserName: string;
   isHost?: boolean;
@@ -54,8 +56,18 @@ function VideoPlayer({
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
+    const video = videoRef.current;
+    if (!video || !stream) return;
+
+    if (video.srcObject !== stream) {
+      video.srcObject = stream;
+    }
+
+    const playPromise = video.play();
+    if (playPromise !== undefined) {
+      playPromise.catch((err) => {
+        console.warn("[VideoPlayer] Autoplay prevented:", err?.message || err);
+      });
     }
   }, [stream]);
 
@@ -67,6 +79,9 @@ function VideoPlayer({
       autoPlay
       playsInline
       muted={isMuted}
+      onLoadedMetadata={() => {
+        videoRef.current?.play().catch(() => {});
+      }}
       className={`w-full h-full object-cover rounded-xl ${className}`}
     />
   );
@@ -76,8 +91,10 @@ function AudioPlayer({ stream }: { stream?: MediaStream }) {
   const audioRef = useRef<HTMLAudioElement>(null);
 
   useEffect(() => {
-    if (audioRef.current && stream) {
-      audioRef.current.srcObject = stream;
+    const audio = audioRef.current;
+    if (audio && stream && audio.srcObject !== stream) {
+      audio.srcObject = stream;
+      audio.play().catch(() => {});
     }
   }, [stream]);
 
@@ -91,6 +108,8 @@ export default function SfuMediaStage({
   cameraOn,
   screenOn,
   localVideoStream,
+  localCameraStream,
+  localScreenStream,
   currentUserId,
   currentUserName,
   isHost = false,
@@ -147,16 +166,28 @@ export default function SfuMediaStage({
               <div className="absolute inset-0 border-4 border-emerald-500/80 rounded-xl pointer-events-none transition-all duration-200" />
             )}
           </div>
-        ) : localVideoStream ? (
+        ) : screenOn && (localScreenStream || localVideoStream) ? (
           <div className="relative w-full h-full flex items-center justify-center bg-black">
             <VideoPlayer
-              stream={localVideoStream}
+              stream={localScreenStream || localVideoStream}
               isMuted={true}
               className="object-contain max-h-full"
             />
             <div className="absolute top-4 left-4 flex items-center gap-2 bg-black/60 backdrop-blur-md px-3 py-1.5 rounded-full border border-white/10 text-xs font-semibold text-white">
-              <span className="w-2 h-2 rounded-full bg-blue-500" />
-              {screenOn ? "🖥️ Your Screen" : "📹 You (Presenter View)"}
+              <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+              🖥️ Your Screen (Live)
+            </div>
+          </div>
+        ) : cameraOn && (localCameraStream || localVideoStream) ? (
+          <div className="relative w-full h-full flex items-center justify-center bg-black">
+            <VideoPlayer
+              stream={localCameraStream || localVideoStream}
+              isMuted={true}
+              className="object-contain max-h-full"
+            />
+            <div className="absolute top-4 left-4 flex items-center gap-2 bg-black/60 backdrop-blur-md px-3 py-1.5 rounded-full border border-white/10 text-xs font-semibold text-white">
+              <span className="w-2 h-2 rounded-full bg-emerald-500" />
+              📹 You (Camera View)
             </div>
           </div>
         ) : (
@@ -184,8 +215,8 @@ export default function SfuMediaStage({
       <div className="relative w-full bg-zinc-900/60 border-t border-zinc-800/80 px-4 py-3 flex items-center gap-3">
         {/* Local Participant Tile */}
         <div className="relative w-32 h-20 md:w-40 md:h-24 bg-zinc-950 rounded-xl border border-zinc-800 flex-shrink-0 flex items-center justify-center overflow-hidden group shadow-md">
-          {cameraOn && localVideoStream ? (
-            <VideoPlayer stream={localVideoStream} isMuted={true} />
+          {cameraOn && (localCameraStream || localVideoStream) ? (
+            <VideoPlayer stream={localCameraStream || localVideoStream} isMuted={true} />
           ) : (
             <div className="flex flex-col items-center justify-center">
               <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center text-xs font-bold text-zinc-300">

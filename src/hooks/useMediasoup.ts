@@ -54,6 +54,17 @@ export function useMediasoup({
   const [isHandRaised, setIsHandRaised] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Dedicated reactive state for local media streams
+  const [localCameraStream, setLocalCameraStream] = useState<MediaStream | null>(null);
+  const [localScreenStream, setLocalScreenStream] = useState<MediaStream | null>(null);
+  const [localAudioStream, setLocalAudioStream] = useState<MediaStream | null>(null);
+
+  // Stream refs to avoid stale closures in track teardowns
+  const localCameraStreamRef = useRef<MediaStream | null>(null);
+  const localScreenStreamRef = useRef<MediaStream | null>(null);
+  const localAudioStreamRef = useRef<MediaStream | null>(null);
+
+  const [socket, setSocket] = useState<Socket | null>(null);
   const socketRef = useRef<Socket | null>(null);
   const deviceRef = useRef<mediasoupClient.types.Device | null>(null);
   const sendTransportRef = useRef<mediasoupClient.types.Transport | null>(null);
@@ -64,14 +75,31 @@ export function useMediasoup({
   const videoProducerRef = useRef<mediasoupClient.types.Producer | null>(null);
   const screenProducerRef = useRef<mediasoupClient.types.Producer | null>(null);
 
-  // Active consumers map: consumerId -> { consumer, kind, producerId, socketId }
+  // Active consumers map: consumerId -> consumer
   const consumersRef = useRef<Map<string, mediasoupClient.types.Consumer>>(new Map());
+
+  // Initialize socket on mount
+  useEffect(() => {
+    const s = io({
+      path: "/api/socket",
+      transports: ["websocket", "polling"],
+      reconnection: true,
+      reconnectionAttempts: 5,
+    });
+    setSocket(s);
+    socketRef.current = s;
+
+    return () => {
+      s.disconnect();
+    };
+  }, []);
 
   // Socket helper with Promise response
   const socketRequest = useCallback((event: string, data: any = {}): Promise<any> => {
     return new Promise((resolve, reject) => {
-      if (!socketRef.current) return reject(new Error("Socket not connected"));
-      socketRef.current.emit(event, data, (response: any) => {
+      const activeSocket = socketRef.current;
+      if (!activeSocket) return reject(new Error("Socket not connected"));
+      activeSocket.emit(event, data, (response: any) => {
         if (!response || response.error) {
           reject(new Error(response?.error || `Error in ${event}`));
         } else {
@@ -81,6 +109,83 @@ export function useMediasoup({
     });
   }, []);
 
+  // Consume a remote producer
+  const consumeProducer = useCallback(
+    async (producerInfo: {
+      producerId: string;
+      producerSocketId: string;
+      userId: string;
+      name: string;
+      kind: "audio" | "video";
+      appData?: any;
+    }) => {
+      if (!deviceRef.current || !recvTransportRef.current || !socketRef.current) return;
+      if (producerInfo.producerSocketId === socketRef.current.id) return; // Don't consume own
+
+      try {
+        const res = await socketRequest("sfu:consume", {
+          roomId,
+          transportId: recvTransportRef.current.id,
+          producerId: producerInfo.producerId,
+          rtpCapabilities: deviceRef.current.rtpCapabilities,
+        });
+
+        const { id, kind, rtpParameters } = res.consumerParams;
+        const consumer = await recvTransportRef.current.consume({
+          id,
+          producerId: producerInfo.producerId,
+          kind,
+          rtpParameters,
+        });
+
+        consumersRef.current.set(consumer.id, consumer);
+
+        const newStream = new MediaStream([consumer.track]);
+
+        // Auto-resume audio immediately
+        if (kind === "audio") {
+          await socketRequest("sfu:consumer-resume", { roomId, consumerId: consumer.id });
+          consumer.resume();
+        } else if (kind === "video") {
+          // Resume video for active speaker or pinned presenter
+          await socketRequest("sfu:consumer-resume", { roomId, consumerId: consumer.id });
+          consumer.resume();
+        }
+
+        // Update peers state
+        setPeers((prev) => {
+          const updated = new Map(prev);
+          const currentPeer = updated.get(producerInfo.producerSocketId) || {
+            socketId: producerInfo.producerSocketId,
+            userId: producerInfo.userId,
+            name: producerInfo.name,
+            micOn: kind === "audio",
+            cameraOn: kind === "video" && !producerInfo.appData?.isScreen,
+            screenOn: kind === "video" && Boolean(producerInfo.appData?.isScreen),
+            isSpeaking: false,
+          };
+
+          if (kind === "audio") {
+            currentPeer.audioStream = newStream;
+            currentPeer.micOn = true;
+            currentPeer.audioConsumerId = consumer.id;
+          } else if (kind === "video") {
+            currentPeer.videoStream = newStream;
+            currentPeer.cameraOn = !producerInfo.appData?.isScreen;
+            currentPeer.screenOn = Boolean(producerInfo.appData?.isScreen);
+            currentPeer.videoConsumerId = consumer.id;
+          }
+
+          updated.set(producerInfo.producerSocketId, currentPeer);
+          return updated;
+        });
+      } catch (err) {
+        console.warn("[SFU Client] Consume producer error:", err);
+      }
+    },
+    [roomId, socketRequest]
+  );
+
   // Initialize and connect SFU
   const joinSfu = useCallback(async () => {
     if (isJoined || isConnecting) return;
@@ -88,15 +193,30 @@ export function useMediasoup({
     setError(null);
 
     try {
-      // Connect to Socket.IO if not already connected
-      if (!socketRef.current) {
-        socketRef.current = io({
-          path: "/api/socket",
-          transports: ["websocket", "polling"],
-        });
+      const activeSocket = socketRef.current;
+      if (!activeSocket) {
+        throw new Error("Socket connection is initializing");
       }
 
-      const socket = socketRef.current;
+      // If socket is still connecting, await connection
+      if (!activeSocket.connected) {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            if (activeSocket.connected) resolve();
+            else reject(new Error("Socket connection timed out"));
+          }, 8000);
+
+          activeSocket.once("connect", () => {
+            clearTimeout(timer);
+            resolve();
+          });
+
+          activeSocket.once("connect_error", (err) => {
+            clearTimeout(timer);
+            reject(err);
+          });
+        });
+      }
 
       // Join SFU room & fetch capabilities
       const joinRes = await socketRequest("sfu:join", {
@@ -191,89 +311,11 @@ export function useMediasoup({
       setError(err.message || "Failed to join media session");
       setIsConnecting(false);
     }
-  }, [roomId, userId, userName, isJoined, isConnecting, socketRequest]);
-
-  // Consume a remote producer
-  const consumeProducer = useCallback(
-    async (producerInfo: {
-      producerId: string;
-      producerSocketId: string;
-      userId: string;
-      name: string;
-      kind: "audio" | "video";
-      appData?: any;
-    }) => {
-      if (!deviceRef.current || !recvTransportRef.current || !socketRef.current) return;
-      if (producerInfo.producerSocketId === socketRef.current.id) return; // Don't consume own
-
-      try {
-        const res = await socketRequest("sfu:consume", {
-          roomId,
-          transportId: recvTransportRef.current.id,
-          producerId: producerInfo.producerId,
-          rtpCapabilities: deviceRef.current.rtpCapabilities,
-        });
-
-        const { id, kind, rtpParameters } = res.consumerParams;
-        const consumer = await recvTransportRef.current.consume({
-          id,
-          producerId: producerInfo.producerId,
-          kind,
-          rtpParameters,
-        });
-
-        consumersRef.current.set(consumer.id, consumer);
-
-        const newStream = new MediaStream([consumer.track]);
-
-        // Auto-resume audio immediately
-        if (kind === "audio") {
-          await socketRequest("sfu:consumer-resume", { roomId, consumerId: consumer.id });
-          consumer.resume();
-        } else if (kind === "video") {
-          // Resume video for active speaker or pinned presenter
-          await socketRequest("sfu:consumer-resume", { roomId, consumerId: consumer.id });
-          consumer.resume();
-        }
-
-        // Update peers state
-        setPeers((prev) => {
-          const updated = new Map(prev);
-          const currentPeer = updated.get(producerInfo.producerSocketId) || {
-            socketId: producerInfo.producerSocketId,
-            userId: producerInfo.userId,
-            name: producerInfo.name,
-            micOn: kind === "audio",
-            cameraOn: kind === "video" && !producerInfo.appData?.isScreen,
-            screenOn: kind === "video" && Boolean(producerInfo.appData?.isScreen),
-            isSpeaking: false,
-          };
-
-          if (kind === "audio") {
-            currentPeer.audioStream = newStream;
-            currentPeer.micOn = true;
-            currentPeer.audioConsumerId = consumer.id;
-          } else if (kind === "video") {
-            currentPeer.videoStream = newStream;
-            currentPeer.cameraOn = !producerInfo.appData?.isScreen;
-            currentPeer.screenOn = Boolean(producerInfo.appData?.isScreen);
-            currentPeer.videoConsumerId = consumer.id;
-          }
-
-          updated.set(producerInfo.producerSocketId, currentPeer);
-          return updated;
-        });
-      } catch (err) {
-        console.warn("[SFU Client] Consume producer error:", err);
-      }
-    },
-    [roomId, socketRequest]
-  );
+  }, [roomId, userId, userName, isJoined, isConnecting, socketRequest, consumeProducer]);
 
   // Setup Socket event listeners
   useEffect(() => {
-    if (!socketRef.current) return;
-    const socket = socketRef.current;
+    if (!socket) return;
 
     const handleNewProducer = (producerInfo: any) => {
       consumeProducer(producerInfo);
@@ -305,7 +347,7 @@ export function useMediasoup({
       });
     };
 
-    const handleActiveSpeaker = ({ socketId, volume }: { socketId: string; volume: number }) => {
+    const handleActiveSpeaker = ({ socketId }: { socketId: string; volume: number }) => {
       setActiveSpeakerSocketId(socketId);
       setPeers((prev) => {
         const updated = new Map(prev);
@@ -330,6 +372,9 @@ export function useMediasoup({
     const handleHostMuteAll = () => {
       if (!isHost && audioProducerRef.current) {
         audioProducerRef.current.pause();
+        if (localAudioStreamRef.current) {
+          localAudioStreamRef.current.getAudioTracks().forEach((t) => (t.enabled = false));
+        }
         setMicOn(false);
       }
     };
@@ -370,21 +415,29 @@ export function useMediasoup({
       socket.off("sfu:host-mute-all", handleHostMuteAll);
       socket.off("sfu:hand-raised", handleHandRaised);
     };
-  }, [consumeProducer, isHost]);
+  }, [socket, consumeProducer, isHost]);
 
   // Toggle Microphone
   const toggleMic = useCallback(async () => {
-    if (!sendTransportRef.current) return;
-
-    if (micOn && audioProducerRef.current) {
-      audioProducerRef.current.close();
-      if (socketRef.current) {
-        socketRef.current.emit("sfu:close-producer", {
-          roomId,
-          producerId: audioProducerRef.current.id,
-        });
+    setError(null);
+    if (micOn) {
+      if (audioProducerRef.current) {
+        try {
+          audioProducerRef.current.close();
+        } catch (_) {}
+        if (socketRef.current) {
+          socketRef.current.emit("sfu:close-producer", {
+            roomId,
+            producerId: audioProducerRef.current.id,
+          });
+        }
+        audioProducerRef.current = null;
       }
-      audioProducerRef.current = null;
+      if (localAudioStreamRef.current) {
+        localAudioStreamRef.current.getTracks().forEach((track) => track.stop());
+        localAudioStreamRef.current = null;
+      }
+      setLocalAudioStream(null);
       setMicOn(false);
       return;
     }
@@ -398,37 +451,57 @@ export function useMediasoup({
         },
       });
 
-      const audioTrack = stream.getAudioTracks()[0];
-      const producer = await sendTransportRef.current.produce({
-        track: audioTrack,
-        codecOptions: {
-          opusStereo: false,
-          opusDtx: true, // discontinuous transmission to save bandwidth
-        },
-        appData: { userId, userName, kind: "audio" },
-      });
-
-      audioProducerRef.current = producer;
+      localAudioStreamRef.current = stream;
+      setLocalAudioStream(stream);
       setMicOn(true);
+
+      // Connect transport if not connected yet
+      let transport = sendTransportRef.current;
+      if (!transport) {
+        await joinSfu();
+        transport = sendTransportRef.current;
+      }
+
+      if (transport && !transport.closed) {
+        const audioTrack = stream.getAudioTracks()[0];
+        const producer = await transport.produce({
+          track: audioTrack,
+          codecOptions: {
+            opusStereo: false,
+            opusDtx: true, // discontinuous transmission to save bandwidth
+          },
+          appData: { userId, userName, kind: "audio" },
+        });
+        audioProducerRef.current = producer;
+      }
     } catch (err: any) {
       console.error("[SFU] Mic access failed:", err);
       setError("Microphone permission denied or unavailable");
+      setMicOn(false);
     }
-  }, [micOn, roomId, userId, userName]);
+  }, [micOn, roomId, userId, userName, joinSfu]);
 
   // Toggle Camera
   const toggleCamera = useCallback(async () => {
-    if (!sendTransportRef.current) return;
-
-    if (cameraOn && videoProducerRef.current) {
-      videoProducerRef.current.close();
-      if (socketRef.current) {
-        socketRef.current.emit("sfu:close-producer", {
-          roomId,
-          producerId: videoProducerRef.current.id,
-        });
+    setError(null);
+    if (cameraOn) {
+      if (videoProducerRef.current) {
+        try {
+          videoProducerRef.current.close();
+        } catch (_) {}
+        if (socketRef.current) {
+          socketRef.current.emit("sfu:close-producer", {
+            roomId,
+            producerId: videoProducerRef.current.id,
+          });
+        }
+        videoProducerRef.current = null;
       }
-      videoProducerRef.current = null;
+      if (localCameraStreamRef.current) {
+        localCameraStreamRef.current.getTracks().forEach((track) => track.stop());
+        localCameraStreamRef.current = null;
+      }
+      setLocalCameraStream(null);
       setCameraOn(false);
       return;
     }
@@ -442,39 +515,57 @@ export function useMediasoup({
         },
       });
 
-      const videoTrack = stream.getVideoTracks()[0];
-      const producer = await sendTransportRef.current.produce({
-        track: videoTrack,
-        encodings: [
-          { maxBitrate: 900000, scaleResolutionDownBy: 1 },
-        ],
-        codecOptions: {
-          videoGoogleStartBitrate: 500,
-        },
-        appData: { userId, userName, isScreen: false },
-      });
-
-      videoProducerRef.current = producer;
+      localCameraStreamRef.current = stream;
+      setLocalCameraStream(stream);
       setCameraOn(true);
+
+      // Connect transport if not connected yet
+      let transport = sendTransportRef.current;
+      if (!transport) {
+        await joinSfu();
+        transport = sendTransportRef.current;
+      }
+
+      if (transport && !transport.closed) {
+        const videoTrack = stream.getVideoTracks()[0];
+        const producer = await transport.produce({
+          track: videoTrack,
+          encodings: [{ maxBitrate: 900000, scaleResolutionDownBy: 1 }],
+          codecOptions: {
+            videoGoogleStartBitrate: 500,
+          },
+          appData: { userId, userName, isScreen: false },
+        });
+        videoProducerRef.current = producer;
+      }
     } catch (err: any) {
       console.error("[SFU] Camera access failed:", err);
       setError("Camera permission denied or unavailable");
+      setCameraOn(false);
     }
-  }, [cameraOn, roomId, userId, userName]);
+  }, [cameraOn, roomId, userId, userName, joinSfu]);
 
   // Toggle Screen Share
   const toggleScreenShare = useCallback(async () => {
-    if (!sendTransportRef.current) return;
-
-    if (screenOn && screenProducerRef.current) {
-      screenProducerRef.current.close();
-      if (socketRef.current) {
-        socketRef.current.emit("sfu:close-producer", {
-          roomId,
-          producerId: screenProducerRef.current.id,
-        });
+    setError(null);
+    if (screenOn) {
+      if (screenProducerRef.current) {
+        try {
+          screenProducerRef.current.close();
+        } catch (_) {}
+        if (socketRef.current) {
+          socketRef.current.emit("sfu:close-producer", {
+            roomId,
+            producerId: screenProducerRef.current.id,
+          });
+        }
+        screenProducerRef.current = null;
       }
-      screenProducerRef.current = null;
+      if (localScreenStreamRef.current) {
+        localScreenStreamRef.current.getTracks().forEach((track) => track.stop());
+        localScreenStreamRef.current = null;
+      }
+      setLocalScreenStream(null);
       setScreenOn(false);
       return;
     }
@@ -489,9 +580,13 @@ export function useMediasoup({
       });
 
       const screenTrack = stream.getVideoTracks()[0];
+
+      // Handle user stopping screen share via browser native controls
       screenTrack.onended = () => {
         if (screenProducerRef.current) {
-          screenProducerRef.current.close();
+          try {
+            screenProducerRef.current.close();
+          } catch (_) {}
           if (socketRef.current) {
             socketRef.current.emit("sfu:close-producer", {
               roomId,
@@ -499,22 +594,42 @@ export function useMediasoup({
             });
           }
           screenProducerRef.current = null;
-          setScreenOn(false);
         }
+        if (localScreenStreamRef.current) {
+          localScreenStreamRef.current.getTracks().forEach((t) => t.stop());
+          localScreenStreamRef.current = null;
+        }
+        setLocalScreenStream(null);
+        setScreenOn(false);
       };
 
-      const producer = await sendTransportRef.current.produce({
-        track: screenTrack,
-        encodings: [{ maxBitrate: 2500000 }],
-        appData: { userId, userName, isScreen: true },
-      });
-
-      screenProducerRef.current = producer;
+      localScreenStreamRef.current = stream;
+      setLocalScreenStream(stream);
       setScreenOn(true);
+
+      // Connect transport if not connected yet
+      let transport = sendTransportRef.current;
+      if (!transport) {
+        await joinSfu();
+        transport = sendTransportRef.current;
+      }
+
+      if (transport && !transport.closed) {
+        const producer = await transport.produce({
+          track: screenTrack,
+          encodings: [{ maxBitrate: 2500000 }],
+          appData: { userId, userName, isScreen: true },
+        });
+        screenProducerRef.current = producer;
+      }
     } catch (err: any) {
       console.error("[SFU] Screen share failed:", err);
+      if (err.name !== "NotAllowedError") {
+        setError("Screen share permission denied or unavailable");
+      }
+      setScreenOn(false);
     }
-  }, [screenOn, roomId, userId, userName]);
+  }, [screenOn, roomId, userId, userName, joinSfu]);
 
   // Host Mute All Students
   const muteAllStudents = useCallback(() => {
@@ -557,9 +672,26 @@ export function useMediasoup({
 
   // Leave SFU session
   const leaveSfu = useCallback(() => {
+    if (localCameraStreamRef.current) {
+      localCameraStreamRef.current.getTracks().forEach((t) => t.stop());
+      localCameraStreamRef.current = null;
+    }
+    if (localScreenStreamRef.current) {
+      localScreenStreamRef.current.getTracks().forEach((t) => t.stop());
+      localScreenStreamRef.current = null;
+    }
+    if (localAudioStreamRef.current) {
+      localAudioStreamRef.current.getTracks().forEach((t) => t.stop());
+      localAudioStreamRef.current = null;
+    }
+
     if (audioProducerRef.current) audioProducerRef.current.close();
     if (videoProducerRef.current) videoProducerRef.current.close();
     if (screenProducerRef.current) screenProducerRef.current.close();
+
+    audioProducerRef.current = null;
+    videoProducerRef.current = null;
+    screenProducerRef.current = null;
 
     Array.from(consumersRef.current.values()).forEach((consumer) => {
       consumer.close();
@@ -569,7 +701,16 @@ export function useMediasoup({
     if (sendTransportRef.current) sendTransportRef.current.close();
     if (recvTransportRef.current) recvTransportRef.current.close();
 
+    sendTransportRef.current = null;
+    recvTransportRef.current = null;
+
     setPeers(new Map());
+    setLocalCameraStream(null);
+    setLocalScreenStream(null);
+    setLocalAudioStream(null);
+    setCameraOn(false);
+    setScreenOn(false);
+    setMicOn(false);
     setIsJoined(false);
   }, []);
 
@@ -595,11 +736,10 @@ export function useMediasoup({
     spotlightPeerId,
     handRaises,
     isHandRaised,
-    localVideoStream: videoProducerRef.current?.track
-      ? new MediaStream([videoProducerRef.current.track])
-      : screenProducerRef.current?.track
-      ? new MediaStream([screenProducerRef.current.track])
-      : undefined,
+    localVideoStream: (localScreenStream || localCameraStream || undefined) as MediaStream | undefined,
+    localCameraStream: (localCameraStream || undefined) as MediaStream | undefined,
+    localScreenStream: (localScreenStream || undefined) as MediaStream | undefined,
+    localAudioStream: (localAudioStream || undefined) as MediaStream | undefined,
     joinSfu,
     leaveSfu,
     toggleMic,

@@ -125,6 +125,13 @@ export default function StudyRoomPage() {
     autoJoin: false, // Activated when video panel is opened
   });
 
+  // Auto-connect SFU whenever video panel is active (including page refresh or restored layout)
+  useEffect(() => {
+    if (activePanels.video && !sfu.isJoined && !sfu.isConnecting) {
+      sfu.joinSfu();
+    }
+  }, [activePanels.video, sfu.isJoined, sfu.isConnecting, sfu]);
+
   // Toggle video stream connection when Video panel opens/closes
   const handleTogglePanel = useCallback(
     (id: PanelId) => {
@@ -323,6 +330,8 @@ export default function StudyRoomPage() {
                             cameraOn={sfu.cameraOn}
                             screenOn={sfu.screenOn}
                             localVideoStream={sfu.localVideoStream}
+                            localCameraStream={sfu.localCameraStream}
+                            localScreenStream={sfu.localScreenStream}
                             currentUserId={currentUserId}
                             currentUserName={currentUserName}
                             activeSpeakerSocketId={sfu.activeSpeakerSocketId}

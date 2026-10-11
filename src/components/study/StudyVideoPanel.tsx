@@ -10,6 +10,8 @@ interface StudyVideoPanelProps {
   cameraOn: boolean;
   screenOn: boolean;
   localVideoStream?: MediaStream;
+  localCameraStream?: MediaStream;
+  localScreenStream?: MediaStream;
   currentUserId: string;
   currentUserName: string;
   activeSpeakerSocketId: string | null;
@@ -31,6 +33,8 @@ export default function StudyVideoPanel({
   cameraOn,
   screenOn,
   localVideoStream,
+  localCameraStream,
+  localScreenStream,
   currentUserId,
   currentUserName,
   activeSpeakerSocketId,
@@ -77,6 +81,8 @@ export default function StudyVideoPanel({
           cameraOn={cameraOn}
           screenOn={screenOn}
           localVideoStream={localVideoStream}
+          localCameraStream={localCameraStream}
+          localScreenStream={localScreenStream}
           currentUserId={currentUserId}
           currentUserName={currentUserName}
           activeSpeakerSocketId={activeSpeakerSocketId}
