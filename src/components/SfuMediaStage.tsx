@@ -141,14 +141,14 @@ export default function SfuMediaStage({
   const visibleFilmstrip = filmstripPeers.slice(page * pageSize, (page + 1) * pageSize);
 
   return (
-    <div className="w-full flex flex-col bg-zinc-950/80 rounded-2xl border border-zinc-800/80 shadow-2xl backdrop-blur-md overflow-hidden transition-all duration-300">
+    <div className="w-full h-full flex flex-col bg-zinc-950/90 rounded-2xl border border-zinc-800/80 shadow-2xl backdrop-blur-md overflow-hidden transition-all duration-300">
       {/* Background audio playback for all remote audio streams (zero CPU lag) */}
       {peers.map((peer) => (
         <AudioPlayer key={`audio-${peer.socketId}`} stream={peer.audioStream} />
       ))}
 
       {/* Main Stage Spotlight Area */}
-      <div className="relative w-full h-[320px] md:h-[420px] bg-black/90 flex items-center justify-center overflow-hidden">
+      <div className="relative w-full flex-1 min-h-[220px] bg-black/90 flex items-center justify-center overflow-hidden">
         {spotlightPeer && spotlightPeer.videoStream ? (
           <div className="relative w-full h-full flex items-center justify-center bg-black">
             <VideoPlayer

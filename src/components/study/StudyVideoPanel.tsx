@@ -74,7 +74,7 @@ export default function StudyVideoPanel({
       </div>
 
       {/* Video Stage Body */}
-      <div className="flex-1 p-3 overflow-y-auto bg-[#0E1116]">
+      <div className="flex-1 p-2 md:p-3 bg-[#0E1116] overflow-hidden flex flex-col">
         <SfuMediaStage
           peers={peers}
           micOn={micOn}

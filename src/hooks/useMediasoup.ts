@@ -443,40 +443,47 @@ export function useMediasoup({
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+      } catch (_) {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
 
       localAudioStreamRef.current = stream;
       setLocalAudioStream(stream);
       setMicOn(true);
 
-      // Connect transport if not connected yet
-      let transport = sendTransportRef.current;
-      if (!transport) {
-        await joinSfu();
-        transport = sendTransportRef.current;
-      }
+      // Asynchronously produce to SFU without blocking local microphone state
+      (async () => {
+        try {
+          let transport = sendTransportRef.current;
+          if (!transport) {
+            await joinSfu();
+            transport = sendTransportRef.current;
+          }
 
-      if (transport && !transport.closed) {
-        const audioTrack = stream.getAudioTracks()[0];
-        const producer = await transport.produce({
-          track: audioTrack,
-          codecOptions: {
-            opusStereo: false,
-            opusDtx: true, // discontinuous transmission to save bandwidth
-          },
-          appData: { userId, userName, kind: "audio" },
-        });
-        audioProducerRef.current = producer;
-      }
+          if (transport && !transport.closed) {
+            const audioTrack = stream.getAudioTracks()[0];
+            const producer = await transport.produce({
+              track: audioTrack,
+              appData: { userId, userName, kind: "audio" },
+            });
+            audioProducerRef.current = producer;
+          }
+        } catch (sfuErr) {
+          console.warn("[SFU] Audio broadcast handshake notice:", sfuErr);
+        }
+      })();
     } catch (err: any) {
       console.error("[SFU] Mic access failed:", err);
-      setError("Microphone permission denied or unavailable");
+      setError("Microphone permission denied or device unavailable");
       setMicOn(false);
     }
   }, [micOn, roomId, userId, userName, joinSfu]);
@@ -507,40 +514,47 @@ export function useMediasoup({
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 1280, max: 1920 },
-          height: { ideal: 720, max: 1080 },
-          frameRate: { ideal: 24, max: 30 },
-        },
-      });
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            frameRate: { ideal: 24, max: 30 },
+          },
+        });
+      } catch (_) {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      }
 
       localCameraStreamRef.current = stream;
       setLocalCameraStream(stream);
       setCameraOn(true);
 
-      // Connect transport if not connected yet
-      let transport = sendTransportRef.current;
-      if (!transport) {
-        await joinSfu();
-        transport = sendTransportRef.current;
-      }
+      // Asynchronously produce to SFU without blocking local video preview
+      (async () => {
+        try {
+          let transport = sendTransportRef.current;
+          if (!transport) {
+            await joinSfu();
+            transport = sendTransportRef.current;
+          }
 
-      if (transport && !transport.closed) {
-        const videoTrack = stream.getVideoTracks()[0];
-        const producer = await transport.produce({
-          track: videoTrack,
-          encodings: [{ maxBitrate: 900000, scaleResolutionDownBy: 1 }],
-          codecOptions: {
-            videoGoogleStartBitrate: 500,
-          },
-          appData: { userId, userName, isScreen: false },
-        });
-        videoProducerRef.current = producer;
-      }
+          if (transport && !transport.closed) {
+            const videoTrack = stream.getVideoTracks()[0];
+            const producer = await transport.produce({
+              track: videoTrack,
+              appData: { userId, userName, isScreen: false },
+            });
+            videoProducerRef.current = producer;
+          }
+        } catch (sfuErr) {
+          console.warn("[SFU] Video broadcast handshake notice:", sfuErr);
+        }
+      })();
     } catch (err: any) {
       console.error("[SFU] Camera access failed:", err);
-      setError("Camera permission denied or unavailable");
+      setError("Camera permission denied or camera device unavailable");
       setCameraOn(false);
     }
   }, [cameraOn, roomId, userId, userName, joinSfu]);
@@ -571,13 +585,17 @@ export function useMediasoup({
     }
 
     try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          displaySurface: "monitor",
-          frameRate: { ideal: 30, max: 60 },
-        },
-        audio: true,
-      });
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: true,
+        });
+      } catch (_) {
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+        });
+      }
 
       const screenTrack = stream.getVideoTracks()[0];
 
@@ -607,21 +625,26 @@ export function useMediasoup({
       setLocalScreenStream(stream);
       setScreenOn(true);
 
-      // Connect transport if not connected yet
-      let transport = sendTransportRef.current;
-      if (!transport) {
-        await joinSfu();
-        transport = sendTransportRef.current;
-      }
+      // Asynchronously produce to SFU without blocking local screen share
+      (async () => {
+        try {
+          let transport = sendTransportRef.current;
+          if (!transport) {
+            await joinSfu();
+            transport = sendTransportRef.current;
+          }
 
-      if (transport && !transport.closed) {
-        const producer = await transport.produce({
-          track: screenTrack,
-          encodings: [{ maxBitrate: 2500000 }],
-          appData: { userId, userName, isScreen: true },
-        });
-        screenProducerRef.current = producer;
-      }
+          if (transport && !transport.closed) {
+            const producer = await transport.produce({
+              track: screenTrack,
+              appData: { userId, userName, isScreen: true },
+            });
+            screenProducerRef.current = producer;
+          }
+        } catch (sfuErr) {
+          console.warn("[SFU] Screen share broadcast handshake notice:", sfuErr);
+        }
+      })();
     } catch (err: any) {
       console.error("[SFU] Screen share failed:", err);
       if (err.name !== "NotAllowedError") {

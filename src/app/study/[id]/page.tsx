@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback, useMemo } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { useStudyRealtime } from "@/hooks/useStudyRealtime";
@@ -15,15 +15,16 @@ import StudySceneDrawer from "@/components/study/StudySceneDrawer";
 import StudyFloatingPomodoro from "@/components/study/StudyFloatingPomodoro";
 import StudyHeroOverlay from "@/components/study/StudyHeroOverlay";
 import StudyBottomDock from "@/components/study/StudyBottomDock";
-import StudyFloatingWindow from "@/components/study/StudyFloatingWindow";
 
 import StudyEditorPanel from "@/components/study/StudyEditorPanel";
 import StudyNotesPanel from "@/components/study/StudyNotesPanel";
 import StudyWhiteboardPanel from "@/components/study/StudyWhiteboardPanel";
 import StudyVideoPanel from "@/components/study/StudyVideoPanel";
-import { Send } from "lucide-react";
+import { Send, X, MessageSquare } from "lucide-react";
 
-const STORAGE_LAYOUT_KEY = "codetogether_study_scene_layout_v3_";
+const STORAGE_LAYOUT_KEY = "codetogether_study_scene_layout_v4_";
+
+type MainPanelKey = "video" | "editor" | "notes" | "whiteboard";
 
 export default function StudyRoomPage() {
   const params = useParams();
@@ -39,33 +40,16 @@ export default function StudyRoomPage() {
   const [showCenterTitle, setShowCenterTitle] = useState<boolean>(true);
 
   // Rail & Drawer state
-  const [activeRailTab, setActiveRailTab] = useState<RailTabId | null>("scenes");
+  const [activeRailTab, setActiveRailTab] = useState<RailTabId | null>(null);
 
-  // Floating windows visibility & minimize states
-  const [activeWindows, setActiveWindows] = useState({
+  // Integrated Workspace Panels (No floating windows)
+  const [activePanels, setActivePanels] = useState<Record<MainPanelKey | "chat", boolean>>({
     notes: false,
     whiteboard: false,
     editor: false,
     video: false,
     chat: false,
   });
-
-  const [minimizedWindows, setMinimizedWindows] = useState({
-    notes: false,
-    whiteboard: false,
-    editor: false,
-    video: false,
-    chat: false,
-  });
-
-  const [windowZIndices, setWindowZIndices] = useState({
-    notes: 20,
-    whiteboard: 21,
-    editor: 22,
-    video: 23,
-    chat: 24,
-  });
-  const [topZ, setTopZ] = useState(25);
 
   const [chatMessageDraft, setChatMessageDraft] = useState("");
 
@@ -109,7 +93,7 @@ export default function StudyRoomPage() {
       const saved = localStorage.getItem(`${STORAGE_LAYOUT_KEY}${roomId}`);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (parsed.activeWindows) setActiveWindows(parsed.activeWindows);
+        if (parsed.activePanels) setActivePanels(parsed.activePanels);
         if (parsed.selectedSceneId) setSelectedSceneId(parsed.selectedSceneId);
         if (typeof parsed.lowMotion === "boolean") setLowMotion(parsed.lowMotion);
         if (typeof parsed.showCenterTitle === "boolean") setShowCenterTitle(parsed.showCenterTitle);
@@ -119,13 +103,13 @@ export default function StudyRoomPage() {
 
   // Save layout to localStorage
   const persistLayout = useCallback(
-    (windows: typeof activeWindows, sceneId: string, motion: boolean, titleVisible: boolean) => {
+    (panels: typeof activePanels, sceneId: string, motion: boolean, titleVisible: boolean) => {
       if (!roomId) return;
       try {
         localStorage.setItem(
           `${STORAGE_LAYOUT_KEY}${roomId}`,
           JSON.stringify({
-            activeWindows: windows,
+            activePanels: panels,
             selectedSceneId: sceneId,
             lowMotion: motion,
             showCenterTitle: titleVisible,
@@ -169,42 +153,28 @@ export default function StudyRoomPage() {
     autoJoin: false,
   });
 
-  // Auto-connect SFU when video window is open
+  // Auto-connect SFU when video stage is active
   useEffect(() => {
-    if (activeWindows.video && !sfu.isJoined && !sfu.isConnecting) {
+    if (activePanels.video && !sfu.isJoined && !sfu.isConnecting) {
       sfu.joinSfu();
     }
-  }, [activeWindows.video, sfu.isJoined, sfu.isConnecting, sfu]);
+  }, [activePanels.video, sfu.isJoined, sfu.isConnecting, sfu]);
 
-  // Bring window to front
-  const bringToFront = useCallback((windowId: keyof typeof windowZIndices) => {
-    setTopZ((prevTop) => {
-      const nextTop = prevTop + 1;
-      setWindowZIndices((prev) => ({ ...prev, [windowId]: nextTop }));
-      return nextTop;
-    });
-  }, []);
-
-  // Toggle Window Visibility
-  const toggleWindow = useCallback(
-    (key: "notes" | "whiteboard" | "editor" | "video" | "chat") => {
-      setActiveWindows((prev) => {
+  // Toggle Panel in workspace
+  const togglePanel = useCallback(
+    (key: MainPanelKey | "chat") => {
+      setActivePanels((prev) => {
         const nextState = { ...prev, [key]: !prev[key] };
-        // If opening, un-minimize and focus
-        if (nextState[key]) {
-          setMinimizedWindows((m) => ({ ...m, [key]: false }));
-          bringToFront(key);
-        }
         persistLayout(nextState, selectedSceneId, lowMotion, showCenterTitle);
         return nextState;
       });
     },
-    [bringToFront, persistLayout, selectedSceneId, lowMotion, showCenterTitle]
+    [persistLayout, selectedSceneId, lowMotion, showCenterTitle]
   );
 
-  const closeWindow = useCallback(
-    (key: "notes" | "whiteboard" | "editor" | "video" | "chat") => {
-      setActiveWindows((prev) => {
+  const closePanel = useCallback(
+    (key: MainPanelKey | "chat") => {
+      setActivePanels((prev) => {
         const nextState = { ...prev, [key]: false };
         if (key === "video" && sfu.isJoined) {
           sfu.leaveSfu();
@@ -216,34 +186,26 @@ export default function StudyRoomPage() {
     [persistLayout, selectedSceneId, lowMotion, showCenterTitle, sfu]
   );
 
-  const toggleMinimizeWindow = useCallback(
-    (key: "notes" | "whiteboard" | "editor" | "video" | "chat") => {
-      setMinimizedWindows((prev) => ({ ...prev, [key]: !prev[key] }));
-    },
-    []
-  );
-
   // Rail tab selection
   const handleSelectRailTab = useCallback(
     (tab: RailTabId) => {
       if (tab === "scenes") {
         setActiveRailTab((prev) => (prev === "scenes" ? null : "scenes"));
       } else if (tab === "timer") {
-        // Toggle Pomodoro timer preset
         realtime.startTimer();
       } else if (tab === "notes") {
-        toggleWindow("notes");
+        togglePanel("notes");
       } else if (tab === "board") {
-        toggleWindow("whiteboard");
+        togglePanel("whiteboard");
       } else if (tab === "editor") {
-        toggleWindow("editor");
+        togglePanel("editor");
       } else if (tab === "sounds") {
         audio.togglePlay();
       } else if (tab === "chat") {
-        toggleWindow("chat");
+        togglePanel("chat");
       }
     },
-    [toggleWindow, audio, realtime]
+    [togglePanel, audio, realtime]
   );
 
   // Scene Selection Handler
@@ -253,9 +215,9 @@ export default function StudyRoomPage() {
       if (isSceneShared) {
         realtime.updateScene(scene.id, true);
       }
-      persistLayout(activeWindows, scene.id, lowMotion, showCenterTitle);
+      persistLayout(activePanels, scene.id, lowMotion, showCenterTitle);
     },
-    [isSceneShared, realtime, persistLayout, activeWindows, lowMotion, showCenterTitle]
+    [isSceneShared, realtime, persistLayout, activePanels, lowMotion, showCenterTitle]
   );
 
   // Share Scene with Room Toggle Handler
@@ -266,14 +228,7 @@ export default function StudyRoomPage() {
 
   // Reset layout to defaults
   const handleResetLayout = useCallback(() => {
-    setActiveWindows({
-      notes: false,
-      whiteboard: false,
-      editor: false,
-      video: false,
-      chat: false,
-    });
-    setMinimizedWindows({
+    setActivePanels({
       notes: false,
       whiteboard: false,
       editor: false,
@@ -298,6 +253,14 @@ export default function StudyRoomPage() {
     setChatMessageDraft("");
   };
 
+  // Identify active main panels (order: video first, then editor, notes, whiteboard)
+  const openMainPanels: MainPanelKey[] = useMemo(() => {
+    const keys: MainPanelKey[] = ["video", "editor", "notes", "whiteboard"];
+    return keys.filter((k) => activePanels[k]);
+  }, [activePanels]);
+
+  const hasMainPanels = openMainPanels.length > 0;
+
   return (
     <main className="relative w-screen h-screen overflow-hidden bg-[#0E1116] text-[#E6EDF3] font-['DM_Sans',sans-serif]">
       {/* 1. Full-Viewport Immersive Scene Renderer */}
@@ -305,11 +268,11 @@ export default function StudyRoomPage() {
 
       {/* 2. Floating Top Bar */}
       <StudySceneTopBar
-        roomName={roomData?.name || "OS Revision, Unit 3"}
+        roomName={roomData?.name || "Study Room"}
         roomCode={roomData?.room_code || roomId}
         currentUser={currentUser}
-        cameraActive={activeWindows.video}
-        onToggleCamera={() => toggleWindow("video")}
+        cameraActive={activePanels.video}
+        onToggleCamera={() => togglePanel("video")}
       />
 
       {/* 3. Left 72px Glass Rail */}
@@ -339,144 +302,126 @@ export default function StudyRoomPage() {
         />
       )}
 
-      {/* 5. Center Hero Title & Subtitle Overlay */}
-      <StudyHeroOverlay
-        title={currentScene.name}
-        subtitle={currentScene.subtitle}
-        visible={showCenterTitle}
-        onToggleVisible={() => setShowCenterTitle((v) => !v)}
-      />
+      {/* 5. Center Hero Title & Subtitle Overlay (Visible when no panels are open) */}
+      {!hasMainPanels && (
+        <StudyHeroOverlay
+          title={currentScene.name}
+          subtitle={currentScene.subtitle}
+          visible={showCenterTitle}
+          onToggleVisible={() => setShowCenterTitle((v) => !v)}
+        />
+      )}
 
-      {/* 6. Top Right Floating Pomodoro Widget */}
-      <StudyFloatingPomodoro
-        timerState={realtime.timerState}
-        onStart={realtime.startTimer}
-        onPause={realtime.pauseTimer}
-        onReset={realtime.resetTimer}
-        onSetPreset={realtime.setTimerPreset}
-      />
-
-      {/* 7. Bottom Center Dock with Overlapping Member Avatars */}
-      <StudyBottomDock
-        activePanels={{
-          notes: activeWindows.notes,
-          whiteboard: activeWindows.whiteboard,
-          editor: activeWindows.editor,
-          chat: activeWindows.chat,
-        }}
-        onTogglePanel={(panel) => toggleWindow(panel)}
-        members={realtime.members}
-        currentUserId={currentUserId}
-        currentUserName={currentUserName}
-      />
+      {/* 6. Top Right Floating Pomodoro Widget (Hides when video or multiple panels occupy screen) */}
+      {(!hasMainPanels || openMainPanels.length === 1 && !activePanels.video) && (
+        <StudyFloatingPomodoro
+          timerState={realtime.timerState}
+          onStart={realtime.startTimer}
+          onPause={realtime.pauseTimer}
+          onReset={realtime.resetTimer}
+          onSetPreset={realtime.setTimerPreset}
+        />
+      )}
 
       {/* ========================================================================= */}
-      {/* 8. FLOATING RESIZABLE PANELS OVER SCENE (react-rnd)                       */}
+      {/* 7. INTEGRATED WORKSPACE PANELS AREA (NO FLOATING WINDOWS)                */}
       {/* ========================================================================= */}
+      {hasMainPanels && (
+        <section
+          aria-label="Active workspace panels"
+          className="fixed top-16 bottom-[74px] left-[84px] z-20 transition-all duration-300"
+          style={{
+            right: activePanels.chat ? "352px" : "16px",
+          }}
+        >
+          <div
+            className={`w-full h-full ${
+              openMainPanels.length === 1
+                ? "flex flex-col"
+                : openMainPanels.length === 2
+                ? "grid grid-cols-1 md:grid-cols-2 gap-3"
+                : "grid grid-cols-1 md:grid-cols-3 gap-3"
+            }`}
+          >
+            {/* Video Stage Panel */}
+            {activePanels.video && (
+              <div className="w-full h-full rounded-2xl overflow-hidden border border-[#2B3340]/80 bg-[#141920]/95 backdrop-blur-xl shadow-2xl flex flex-col">
+                <StudyVideoPanel
+                  peers={sfu.peers}
+                  micOn={sfu.micOn}
+                  cameraOn={sfu.cameraOn}
+                  screenOn={sfu.screenOn}
+                  localVideoStream={sfu.localVideoStream}
+                  localCameraStream={sfu.localCameraStream}
+                  localScreenStream={sfu.localScreenStream}
+                  currentUserId={currentUserId}
+                  currentUserName={currentUserName}
+                  activeSpeakerSocketId={sfu.activeSpeakerSocketId}
+                  spotlightPeerId={sfu.spotlightPeerId}
+                  handRaises={sfu.handRaises}
+                  isHandRaised={sfu.isHandRaised}
+                  onToggleMic={sfu.toggleMic}
+                  onToggleCamera={sfu.toggleCamera}
+                  onToggleScreenShare={sfu.toggleScreenShare}
+                  onToggleRaiseHand={sfu.toggleRaiseHand}
+                  onMuteAll={sfu.muteAllStudents}
+                  onToggleSpotlight={sfu.toggleSpotlight}
+                  onClose={() => closePanel("video")}
+                />
+              </div>
+            )}
 
-      {/* Notes Floating Window */}
-      <StudyFloatingWindow
-        id="notes"
-        title="Study Notes (Markdown)"
-        isOpen={activeWindows.notes}
-        isMinimized={minimizedWindows.notes}
-        zIndex={windowZIndices.notes}
-        onClose={() => closeWindow("notes")}
-        onMinimize={() => toggleMinimizeWindow("notes")}
-        onFocus={() => bringToFront("notes")}
-        defaultPosition={{ x: 140, y: 120 }}
-        defaultSize={{ width: 480, height: 420 }}
-      >
-        <StudyNotesPanel onClose={() => closeWindow("notes")} />
-      </StudyFloatingWindow>
+            {/* Code Editor Panel */}
+            {activePanels.editor && (
+              <div className="w-full h-full rounded-2xl overflow-hidden border border-[#2B3340]/80 bg-[#141920]/95 backdrop-blur-xl shadow-2xl flex flex-col">
+                <StudyEditorPanel onClose={() => closePanel("editor")} />
+              </div>
+            )}
 
-      {/* Whiteboard Floating Window */}
-      <StudyFloatingWindow
-        id="whiteboard"
-        title="Collaborative Whiteboard"
-        isOpen={activeWindows.whiteboard}
-        isMinimized={minimizedWindows.whiteboard}
-        zIndex={windowZIndices.whiteboard}
-        onClose={() => closeWindow("whiteboard")}
-        onMinimize={() => toggleMinimizeWindow("whiteboard")}
-        onFocus={() => bringToFront("whiteboard")}
-        defaultPosition={{ x: 260, y: 110 }}
-        defaultSize={{ width: 620, height: 460 }}
-      >
-        <StudyWhiteboardPanel
-          roomId={roomId}
-          currentUserId={currentUserId}
-          onClose={() => closeWindow("whiteboard")}
-        />
-      </StudyFloatingWindow>
+            {/* Notes Panel */}
+            {activePanels.notes && (
+              <div className="w-full h-full rounded-2xl overflow-hidden border border-[#2B3340]/80 bg-[#141920]/95 backdrop-blur-xl shadow-2xl flex flex-col">
+                <StudyNotesPanel onClose={() => closePanel("notes")} />
+              </div>
+            )}
 
-      {/* Code Editor Floating Window */}
-      <StudyFloatingWindow
-        id="editor"
-        title="Code Editor (In-Browser Execution)"
-        isOpen={activeWindows.editor}
-        isMinimized={minimizedWindows.editor}
-        zIndex={windowZIndices.editor}
-        onClose={() => closeWindow("editor")}
-        onMinimize={() => toggleMinimizeWindow("editor")}
-        onFocus={() => bringToFront("editor")}
-        defaultPosition={{ x: 220, y: 90 }}
-        defaultSize={{ width: 660, height: 500 }}
-      >
-        <StudyEditorPanel onClose={() => closeWindow("editor")} />
-      </StudyFloatingWindow>
+            {/* Whiteboard Panel */}
+            {activePanels.whiteboard && (
+              <div className="w-full h-full rounded-2xl overflow-hidden border border-[#2B3340]/80 bg-[#141920]/95 backdrop-blur-xl shadow-2xl flex flex-col">
+                <StudyWhiteboardPanel
+                  roomId={roomId}
+                  currentUserId={currentUserId}
+                  onClose={() => closePanel("whiteboard")}
+                />
+              </div>
+            )}
+          </div>
+        </section>
+      )}
 
-      {/* Video Stage Floating Window (Mediasoup SFU) */}
-      <StudyFloatingWindow
-        id="video"
-        title="Video Stage (Mediasoup SFU - 250 Scale)"
-        isOpen={activeWindows.video}
-        isMinimized={minimizedWindows.video}
-        zIndex={windowZIndices.video}
-        onClose={() => closeWindow("video")}
-        onMinimize={() => toggleMinimizeWindow("video")}
-        onFocus={() => bringToFront("video")}
-        defaultPosition={{ x: 180, y: 100 }}
-        defaultSize={{ width: 720, height: 520 }}
-      >
-        <StudyVideoPanel
-          peers={sfu.peers}
-          micOn={sfu.micOn}
-          cameraOn={sfu.cameraOn}
-          screenOn={sfu.screenOn}
-          localVideoStream={sfu.localVideoStream}
-          localCameraStream={sfu.localCameraStream}
-          localScreenStream={sfu.localScreenStream}
-          currentUserId={currentUserId}
-          currentUserName={currentUserName}
-          activeSpeakerSocketId={sfu.activeSpeakerSocketId}
-          spotlightPeerId={sfu.spotlightPeerId}
-          handRaises={sfu.handRaises}
-          isHandRaised={sfu.isHandRaised}
-          onToggleMic={sfu.toggleMic}
-          onToggleCamera={sfu.toggleCamera}
-          onToggleScreenShare={sfu.toggleScreenShare}
-          onToggleRaiseHand={sfu.toggleRaiseHand}
-          onMuteAll={sfu.muteAllStudents}
-          onToggleSpotlight={sfu.toggleSpotlight}
-          onClose={() => closeWindow("video")}
-        />
-      </StudyFloatingWindow>
+      {/* ========================================================================= */}
+      {/* 8. SLIDE-OUT CHAT PANEL (RIGHT SIDE DOCKED)                              */}
+      {/* ========================================================================= */}
+      {activePanels.chat && (
+        <aside
+          aria-label="Workspace chat"
+          className="fixed top-16 bottom-[74px] right-3 w-[338px] z-30 rounded-2xl border border-[#2B3340]/80 bg-[#141920]/95 backdrop-blur-xl shadow-2xl flex flex-col overflow-hidden font-['DM_Sans',sans-serif]"
+        >
+          {/* Header */}
+          <div className="h-12 px-4 bg-[#141920] border-b border-[#232A35] flex items-center justify-between flex-shrink-0">
+            <div className="flex items-center gap-2">
+              <MessageSquare size={16} className="text-[#82AAFF]" />
+              <span className="text-xs font-bold text-[#E6EDF3]">Workspace Chat</span>
+            </div>
+            <button
+              onClick={() => closePanel("chat")}
+              aria-label="Close chat"
+              className="p-1 rounded text-[#8B97A7] hover:text-[#E6EDF3] transition-colors"
+            >
+              <X size={15} />
+            </button>
+          </div>
 
-      {/* Workspace Chat Floating Window */}
-      <StudyFloatingWindow
-        id="chat"
-        title="Workspace Chat"
-        isOpen={activeWindows.chat}
-        isMinimized={minimizedWindows.chat}
-        zIndex={windowZIndices.chat}
-        onClose={() => closeWindow("chat")}
-        onMinimize={() => toggleMinimizeWindow("chat")}
-        onFocus={() => bringToFront("chat")}
-        defaultPosition={{ x: typeof window !== "undefined" ? Math.max(20, window.innerWidth - 380) : 700, y: 180 }}
-        defaultSize={{ width: 340, height: 440 }}
-      >
-        <div className="w-full h-full flex flex-col bg-[#141920]">
           {/* Messages list */}
           <div className="flex-1 overflow-y-auto p-3 space-y-2 text-xs">
             {realtime.messages.map((m) => (
@@ -487,20 +432,20 @@ export default function StudyRoomPage() {
                     {new Date(m.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                   </span>
                 </div>
-                <div className="text-[#E6EDF3] bg-[#0E1116] p-2 rounded-lg border border-[#232A35] break-words">
+                <div className="text-[#E6EDF3] bg-[#0E1116] p-2.5 rounded-lg border border-[#232A35] break-words">
                   {m.body}
                 </div>
               </div>
             ))}
             {realtime.messages.length === 0 && (
-              <div className="text-center text-xs text-[#8B97A7] mt-8">
+              <div className="text-center text-xs text-[#8B97A7] mt-12">
                 No messages yet. Send a message to chat with your study group!
               </div>
             )}
           </div>
 
           {/* Chat input */}
-          <form onSubmit={handleSendChat} className="p-2.5 border-t border-[#232A35] flex items-center gap-2 bg-[#0E1116]">
+          <form onSubmit={handleSendChat} className="p-2.5 border-t border-[#232A35] flex items-center gap-2 bg-[#0E1116] flex-shrink-0">
             <input
               type="text"
               value={chatMessageDraft}
@@ -516,8 +461,22 @@ export default function StudyRoomPage() {
               <Send size={14} />
             </button>
           </form>
-        </div>
-      </StudyFloatingWindow>
+        </aside>
+      )}
+
+      {/* 9. Bottom Center Dock with Overlapping Member Avatars */}
+      <StudyBottomDock
+        activePanels={{
+          notes: activePanels.notes,
+          whiteboard: activePanels.whiteboard,
+          editor: activePanels.editor,
+          chat: activePanels.chat,
+        }}
+        onTogglePanel={(panel) => togglePanel(panel)}
+        members={realtime.members}
+        currentUserId={currentUserId}
+        currentUserName={currentUserName}
+      />
     </main>
   );
 }

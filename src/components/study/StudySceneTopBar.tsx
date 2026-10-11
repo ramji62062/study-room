@@ -12,6 +12,24 @@ interface StudySceneTopBarProps {
   onToggleCamera: () => void;
 }
 
+function parseRoomTitle(raw: any): string {
+  if (!raw) return "Study Room";
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (trimmed.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        return parsed.title || parsed.name || "Study Room";
+      } catch (_) {}
+    }
+    return trimmed;
+  }
+  if (typeof raw === "object") {
+    return raw.title || raw.name || "Study Room";
+  }
+  return String(raw);
+}
+
 export default function StudySceneTopBar({
   roomName,
   roomCode,
@@ -77,7 +95,7 @@ export default function StudySceneTopBar({
       <div className="flex items-center gap-2 pointer-events-auto">
         {/* Room name chip */}
         <div className="h-10 px-4 hidden sm:flex items-center rounded-xl bg-[#0E1116]/80 border border-[#2B3340]/60 text-xs font-medium text-[#E6EDF3] backdrop-blur-md shadow-md truncate max-w-[220px]">
-          {roomName || "Study Room"}
+          {parseRoomTitle(roomName)}
         </div>
 
         {/* Invite button */}
