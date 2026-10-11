@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
 
     const { data: room, error: roomError } = await supabaseAdmin
       .from("rooms")
-      .select("id, name, room_code, created_by, is_active")
+      .select("id, name, room_code, created_by, is_active, created_at")
       .eq("room_code", roomCode)
       .maybeSingle();
 
@@ -40,6 +40,20 @@ export async function POST(req: NextRequest) {
     }
 
     const meta = parseRoomMeta(room.name);
+    const roomType = meta.roomType || (room as any).room_type || "coding";
+
+    // Enforce 45-minute duration limit for free study rooms
+    if (roomType === "study" && room.created_at) {
+      const elapsedMs = Date.now() - new Date(room.created_at).getTime();
+      if (elapsedMs > 45 * 60 * 1000) {
+        await supabaseAdmin.from("rooms").update({ is_active: false }).eq("id", room.id);
+        return NextResponse.json(
+          { error: "This study session has reached its 45-minute limit." },
+          { status: 403 }
+        );
+      }
+    }
+
     const requiredAccessCode = String(meta.accessCode || "").trim();
     const isPrivate = Boolean(meta.isPrivate || requiredAccessCode);
     const isOwner = user?.id && user.id === room.created_by;
@@ -58,6 +72,21 @@ export async function POST(req: NextRequest) {
       ? await existingQuery.eq("user_id", user.id)
       : await existingQuery.eq("guest_name", participantGuestName);
 
+    // Enforce strict 5-seat limit on study rooms (reject 6th participant)
+    if (roomType === "study" && (!existing || existing.length === 0)) {
+      const { count } = await supabaseAdmin
+        .from("room_participants")
+        .select("id", { count: "exact", head: true })
+        .eq("room_id", room.id);
+
+      if ((count ?? 0) >= 5) {
+        return NextResponse.json(
+          { error: "This study room has reached its maximum capacity of 5 seats." },
+          { status: 403 }
+        );
+      }
+    }
+
     const { error: participantError } = existing?.length
       ? { error: null }
       : await supabaseAdmin.from("room_participants").insert(participant as any);
@@ -66,7 +95,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: participantError.message }, { status: 500 });
     }
 
-    return NextResponse.json({ roomId: room.id });
+    return NextResponse.json({ roomId: room.id, roomType });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Unexpected server error" },

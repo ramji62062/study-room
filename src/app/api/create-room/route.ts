@@ -26,6 +26,7 @@ export async function POST(request: Request) {
       category?: string;
       description?: string;
       authorName?: string;
+      roomType?: "coding" | "study";
     };
 
     const { user } = await getAuthenticatedUser(request);
@@ -37,11 +38,13 @@ export async function POST(request: Request) {
     const starterCode = STARTER_BY_LANGUAGE[selectedLanguage] || STARTER_BY_LANGUAGE.javascript;
     const roomCode = generateRoomCode(6);
     const supabaseAdmin = getSupabaseAdmin();
+    const roomType = body.roomType === "study" ? "study" : "coding";
 
-    let finalRoomName = body.roomName || "Live Coding Room";
-    if (!finalRoomName.startsWith("{") && (body.isPrivate || body.isLibrary || body.category || body.accessCode)) {
+    let finalRoomName = body.roomName || (roomType === "study" ? "Live Study Classroom" : "Live Coding Room");
+    if (!finalRoomName.startsWith("{")) {
       finalRoomName = JSON.stringify({
-        title: body.roomName || "Workspace",
+        title: body.roomName || (roomType === "study" ? "Live Study Classroom" : "Workspace"),
+        roomType: roomType,
         isLibrary: Boolean(body.isLibrary),
         isPrivate: Boolean(body.isPrivate),
         accessCode: body.accessCode ? String(body.accessCode).trim() : "",
@@ -51,17 +54,19 @@ export async function POST(request: Request) {
       });
     }
 
+    const insertPayload: any = {
+      name: finalRoomName,
+      room_code: roomCode,
+      created_by: user.id,
+      language: selectedLanguage,
+      files_json: body.files || null,
+      code_content: body.files ? null : starterCode,
+      is_active: !body.isLibrary,
+    };
+
     const { data: room, error } = await supabaseAdmin
       .from("rooms")
-      .insert({
-        name: finalRoomName,
-        room_code: roomCode,
-        created_by: user.id,
-        language: selectedLanguage,
-        files_json: body.files || null,
-        code_content: body.files ? null : starterCode,
-        is_active: !body.isLibrary,
-      })
+      .insert(insertPayload)
       .select("id, room_code")
       .single();
 

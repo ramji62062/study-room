@@ -9,6 +9,8 @@ const { createClient } = require("@supabase/supabase-js");
 const terminalService = require("./server/terminal-service");
 const ptyService = require("./server/pty-service");
 const lspService = require("./server/lsp-service");
+const sfuManager = require("./server/sfu/sfuManager");
+const studyRoomService = require("./server/study/studyRoomService");
 
 const dev = process.env.NODE_ENV !== "production";
 
@@ -32,6 +34,10 @@ const supabaseAdmin = rawSupabaseUrl && serviceRoleKey
       auth: { autoRefreshToken: false, persistSession: false },
     })
   : null;
+
+if (supabaseAdmin) {
+  studyRoomService.setSupabaseAdmin(supabaseAdmin);
+}
 
 function getRoom(roomId) {
   if (!rooms.has(roomId)) rooms.set(roomId, new Map());
@@ -110,6 +116,10 @@ function startServer(port) {
       console.log(`[terminal] Docker sandbox ${ready ? "ready" : "unavailable"}`);
     });
 
+    sfuManager.init(io).catch((err) => {
+      console.error("[sfu] Failed to initialize Mediasoup SFU:", err);
+    });
+
     // The editor/collab channel (socket.io) keeps only control + file-sync
     // notifications. The raw terminal byte stream and LSP JSON-RPC live on
     // their own dedicated WebSocket channels (see below).
@@ -147,6 +157,8 @@ function startServer(port) {
       });
 
       terminalService.wireSocketIo(io, socket);
+      sfuManager.wireSocketEvents(io, socket);
+      studyRoomService.wireSocketEvents(io, socket);
 
       socket.on("call:join", async (payload = {}) => {
         const roomId = String(payload.roomId || "default");

@@ -148,6 +148,15 @@ function getRoomScheduleDetails(roomName: string | null) {
   return { isScheduled: false, startAt: null, endAt: null, invitedEmails: [] };
 }
 
+function getRoomMeta(roomName: string | null): any {
+  if (roomName && roomName.startsWith("{")) {
+    try {
+      return JSON.parse(roomName);
+    } catch {}
+  }
+  return {};
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const { theme, setTheme } = useTheme();
@@ -173,6 +182,7 @@ export default function DashboardPage() {
   
   // Workspace Creation Modal States
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [createRoomMode, setCreateRoomMode] = useState<"coding" | "study">("coding");
   const [createWorkspaceTitle, setCreateWorkspaceTitle] = useState("");
   const [createWorkspaceLang, setCreateWorkspaceLang] = useState("javascript");
   const [createWorkspaceCategory, setCreateWorkspaceCategory] = useState("Tutorials");
@@ -343,6 +353,7 @@ export default function DashboardPage() {
         accessCode: createWorkspaceAccessCode.trim(),
         authorName: user.name || user.email?.split("@")[0] || "User",
         isLibrary: false,
+        roomType: createRoomMode,
       }),
     });
     const room = await res.json();
@@ -350,7 +361,11 @@ export default function DashboardPage() {
       setShowCreateModal(false);
       setCreateWorkspaceTitle("");
       setCreateWorkspaceAccessCode("");
-      router.push(`/room/${room.id}`);
+      if (createRoomMode === "study") {
+        router.push(`/study/${room.id}`);
+      } else {
+        router.push(`/room/${room.id}`);
+      }
     } else {
       alert(room.error || "Failed to create workspace.");
     }
@@ -376,7 +391,11 @@ export default function DashboardPage() {
     if (res.ok && result.roomId) {
       setJoinInput("");
       setJoinAccessCode("");
-      router.push(`/room/${result.roomId}`);
+      if (result.roomType === "study") {
+        router.push(`/study/${result.roomId}`);
+      } else {
+        router.push(`/room/${result.roomId}`);
+      }
     } else {
       setJoinError(result.error || "Room not found. Check the room code and access code.");
     }
@@ -917,6 +936,9 @@ function WorkspaceCard({
                   {filtered.map((room, index) => {
                     const schedule = getRoomScheduleDetails(room.name);
                     const displayName = getRoomDisplayName(room.name);
+                    const meta = getRoomMeta(room.name);
+                    const isStudy = meta.roomType === "study" || (room as any).room_type === "study";
+                    const targetUrl = isStudy ? `/study/${room.id}` : `/room/${room.id}`;
 
                     return (
                       <div key={room.id} className="glass-panel hover-card-glow animate-slide-up" style={{ animationDelay: `${300 + index * 50}ms`, borderRadius: 16, padding: 20, display: "flex", flexDirection: "column", gap: 14, cursor: "pointer", position: "relative" }}>
@@ -924,6 +946,11 @@ function WorkspaceCard({
                           <div>
                             <div className="flex items-center gap-[6px]" style={{ marginBottom: 4, flexWrap: "wrap" }}>
                               <h3 className="font-bold text-[15px]" style={{ margin: 0 }}>{displayName}</h3>
+                              {isStudy && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded-[4px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                                  📚 Study Hub
+                                </span>
+                              )}
                               {schedule.isScheduled && (
                                 <span className="text-[10px] p-[1px] rounded-[4px] font-bold" style={{ background: "#ffffff20", color: "#ffffff" }}>
                                   Scheduled
@@ -979,11 +1006,11 @@ function WorkspaceCard({
                           </div>
                         </div>
 
-                        <button onClick={() => router.push(`/room/${room.id}`)}
+                        <button onClick={() => router.push(targetUrl)}
                           className="p-[9px] rounded-[10px] text-[13px] font-extrabold cursor-pointer flex items-center justify-center gap-[8px]" style={{ background: "#fff", border: "1px solid #fff", color: "#000", transition: "all 0.15s" }}
                           onMouseOver={e => { (e.currentTarget as HTMLElement).style.background = "#000"; (e.currentTarget as HTMLElement).style.color = "#fff"; (e.currentTarget as HTMLElement).style.borderColor = "#fff"; }}
                           onMouseOut={e => { (e.currentTarget as HTMLElement).style.background = "#fff"; (e.currentTarget as HTMLElement).style.color = "#000"; (e.currentTarget as HTMLElement).style.borderColor = "#fff"; }}>
-                          <Code2 size={14}/> Open Workspace <ArrowRight size={13}/>
+                          {isStudy ? <BookOpen size={14}/> : <Code2 size={14}/>} {isStudy ? "Open Study Classroom" : "Open Workspace"} <ArrowRight size={13}/>
                         </button>
                       </div>
                     );
@@ -1444,6 +1471,60 @@ function WorkspaceCard({
             </div>
 
             <div className="flex flex-col gap-[16px]">
+              {/* Room Architecture Type */}
+              <div>
+                <label className="text-[11px] font-bold" style={{ color: "#888", textTransform: "uppercase", display: "block", marginBottom: 8 }}>Room Architecture</label>
+                <div className="flex gap-[10px]">
+                  <button
+                    type="button"
+                    onClick={() => setCreateRoomMode("coding")}
+                    style={{
+                      flex: 1,
+                      padding: "12px",
+                      background: createRoomMode === "coding" ? "#3b82f620" : "#111",
+                      border: createRoomMode === "coding" ? "2px solid #3b82f6" : "1px solid #222",
+                      borderRadius: 12,
+                      color: createRoomMode === "coding" ? "#60a5fa" : "#888",
+                      fontSize: 12,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      gap: 4,
+                      transition: "all 0.15s"
+                    }}
+                  >
+                    <span className="flex items-center gap-1.5 text-[13px] font-bold">💻 Coding Room</span>
+                    <span className="text-[10px] text-zinc-500 font-normal">Monaco Editor + Terminal</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setCreateRoomMode("study")}
+                    style={{
+                      flex: 1,
+                      padding: "12px",
+                      background: createRoomMode === "study" ? "#a855f720" : "#111",
+                      border: createRoomMode === "study" ? "2px solid #a855f7" : "1px solid #222",
+                      borderRadius: 12,
+                      color: createRoomMode === "study" ? "#c084fc" : "#888",
+                      fontSize: 12,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      gap: 4,
+                      transition: "all 0.15s"
+                    }}
+                  >
+                    <span className="flex items-center gap-1.5 text-[13px] font-bold">📚 Study & Classroom</span>
+                    <span className="text-[10px] text-zinc-500 font-normal">Stage + Whiteboard (250 Seats)</span>
+                  </button>
+                </div>
+              </div>
+
               {/* Workspace Name */}
               <div>
                 <label className="text-[11px] font-bold" style={{ color: "#888", textTransform: "uppercase", display: "block", marginBottom: 6 }}>Workspace Name</label>
