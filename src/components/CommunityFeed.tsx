@@ -1,542 +1,833 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
-import { 
-  Video, Folder, Search, MessageSquare, Heart, 
-  Share2, MoreVertical, Play, Plus, Users, Lock, Code2, PlayCircle, Send, Radio
+import {
+  MessageSquare, Heart, Share2, Plus, Users, Lock, Code2,
+  PlayCircle, Send, Radio, Search, Sparkles, BookOpen, Clock,
+  Check, ExternalLink, Flame, Bookmark
 } from "lucide-react";
 
+interface CommunityComment {
+  id: string;
+  post_id: string;
+  author_id: string;
+  author_name: string;
+  author_avatar?: string;
+  content: string;
+  created_at: string;
+}
+
+interface CommunityPost {
+  id: string;
+  author_id: string;
+  author_name: string;
+  author_avatar?: string;
+  content_text: string;
+  media_url?: string;
+  media_type?: string;
+  category?: string;
+  room_code?: string;
+  room_type?: "study" | "coding";
+  created_at: string;
+  likes: { id?: string; user_id: string }[];
+  comments: CommunityComment[];
+}
+
+const INITIAL_COMMUNITY_POSTS: CommunityPost[] = [
+  {
+    id: "seed-post-1",
+    author_id: "user-sarah",
+    author_name: "Sarah Chen",
+    author_avatar: "",
+    content_text: "Hey everyone! Starting a 50-minute deep focus study block with the Rainy Cafe scene. Whiteboard is set up for reviewing Distributed Systems papers. Join in if you're working on systems or algorithms!",
+    category: "study",
+    room_code: "FOCUS1",
+    room_type: "study",
+    created_at: new Date(Date.now() - 28 * 60 * 1000).toISOString(),
+    likes: [{ user_id: "u-1" }, { user_id: "u-2" }, { user_id: "u-3" }, { user_id: "u-4" }],
+    comments: [
+      {
+        id: "c-1",
+        post_id: "seed-post-1",
+        author_id: "u-1",
+        author_name: "Alex Rivera",
+        content: "Love the Rainy Cafe ambient sound. Hopping in now!",
+        created_at: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
+      },
+    ],
+  },
+  {
+    id: "seed-post-2",
+    author_id: "user-devin",
+    author_name: "Devin Vance",
+    author_avatar: "",
+    content_text: "Built a tiny WebAssembly AST interpreter in Rust today. Testing browser-side bytecode execution with Monaco. What syntax constructs do you usually recommend keeping minimal for v1?",
+    category: "showcase",
+    created_at: new Date(Date.now() - 3 * 3600 * 1000).toISOString(),
+    likes: [{ user_id: "u-3" }, { user_id: "u-5" }, { user_id: "u-6" }],
+    comments: [
+      {
+        id: "c-2",
+        post_id: "seed-post-2",
+        author_id: "u-7",
+        author_name: "Elena Rostova",
+        content: "Stick to S-expressions or a straightforward Pratt parser first. Makes AST generation super clean.",
+        created_at: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
+      },
+    ],
+  },
+  {
+    id: "seed-post-3",
+    author_id: "user-marcus",
+    author_name: "Marcus Aurel",
+    author_avatar: "",
+    content_text: "Night Library session is live! We have 3 spots open for a collaborative Pomodoro sprint (25m focus / 5m break). Cam/Mic optional, screen share open.",
+    category: "study",
+    room_code: "NIGHT9",
+    room_type: "study",
+    created_at: new Date(Date.now() - 5 * 3600 * 1000).toISOString(),
+    likes: [{ user_id: "u-2" }, { user_id: "u-8" }],
+    comments: [],
+  },
+];
+
+const COMMUNITY_STORAGE_KEY = "codetogether_community_posts_v2";
+
 export default function CommunityFeed({ currentUserId }: { currentUserId: string }) {
-  const [activeTab, setActiveTab] = useState<"feed" | "live" | "requests">("feed");
-  const [liveRooms, setLiveRooms] = useState<any[]>([]);
-  const [loadingRooms, setLoadingRooms] = useState(false);
   const router = useRouter();
-  const [posts, setPosts] = useState<any[]>([]);
+  const [activeTab, setActiveTab] = useState<"feed" | "live" | "members">("feed");
+  const [selectedCategory, setSelectedCategory] = useState<string>("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [posts, setPosts] = useState<CommunityPost[]>([]);
   const [loading, setLoading] = useState(true);
   const [newPostContent, setNewPostContent] = useState("");
+  const [newPostCategory, setNewPostCategory] = useState<string>("general");
+  const [attachedRoomCode, setAttachedRoomCode] = useState("");
+  const [attachedRoomType, setAttachedRoomType] = useState<"study" | "coding">("study");
   const [isPosting, setIsPosting] = useState(false);
-  const [followRequests, setFollowRequests] = useState<any[]>([]);
-  const [commentText, setCommentText] = useState<{ [postId: string]: string }>({});
+  const [liveRooms, setLiveRooms] = useState<any[]>([]);
+  const [loadingRooms, setLoadingRooms] = useState(false);
+  const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
+  const [expandedComments, setExpandedComments] = useState<Record<string, boolean>>({});
+  const [copiedLinkPostId, setCopiedLinkPostId] = useState<string | null>(null);
+  const [userProfile, setUserProfile] = useState<{ name: string; avatar?: string }>({
+    name: "You",
+  });
 
-  const fetchFollowRequests = async () => {
-    if (!currentUserId) return;
+  // Current user display name
+  useEffect(() => {
+    supabase.auth.getSession().then((res: any) => {
+      const session = res?.data?.session;
+      if (session?.user) {
+        setUserProfile({
+          name: session.user.user_metadata?.name || session.user.email?.split("@")[0] || "Developer",
+          avatar: session.user.user_metadata?.avatar_url,
+        });
+      }
+    });
+  }, []);
+
+  // Load posts with Supabase and local resilience
+  const fetchPosts = useCallback(async () => {
+    setLoading(true);
+    let loadedFromDb = false;
+
     try {
-      const { data } = await supabase
-        .from('follows')
-        .select('*, follower:users!follows_follower_id_fkey(id, name, avatar_url)')
-        .eq('following_id', currentUserId)
-        .eq('status', 'pending');
-      if (data) setFollowRequests(data);
-    } catch (err) {
-      console.error("fetchFollowRequests error:", err);
+      const { data, error } = await supabase
+        .from("posts")
+        .select("*")
+        .order("created_at", { ascending: false });
+
+      if (!error && data && data.length > 0) {
+        // Fetch comments and likes if available
+        const postIds = data.map((p: any) => p.id);
+        const [{ data: commentsData }, { data: likesData }] = await Promise.all([
+          supabase.from("comments").select("*").in("post_id", postIds),
+          supabase.from("likes").select("*").in("post_id", postIds),
+        ]);
+
+        const mapped: CommunityPost[] = data.map((p: any) => ({
+          id: p.id,
+          author_id: p.author_id,
+          author_name: p.author_name || "Community Member",
+          author_avatar: p.author_avatar,
+          content_text: p.content_text,
+          media_url: p.media_url,
+          media_type: p.media_type,
+          category: p.category || "general",
+          created_at: p.created_at,
+          likes: (likesData || []).filter((l: any) => l.post_id === p.id),
+          comments: (commentsData || []).filter((c: any) => c.post_id === p.id),
+        }));
+
+        setPosts(mapped);
+        loadedFromDb = true;
+      }
+    } catch (_) {}
+
+    // Fallback to localStorage or curated seed posts
+    if (!loadedFromDb) {
+      try {
+        const saved = localStorage.getItem(COMMUNITY_STORAGE_KEY);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setPosts(parsed);
+            setLoading(false);
+            return;
+          }
+        }
+      } catch (_) {}
+      setPosts(INITIAL_COMMUNITY_POSTS);
     }
+    setLoading(false);
+  }, []);
+
+  // Save posts to localStorage
+  const persistPosts = (updated: CommunityPost[]) => {
+    setPosts(updated);
+    try {
+      localStorage.setItem(COMMUNITY_STORAGE_KEY, JSON.stringify(updated));
+    } catch (_) {}
   };
 
-  const fetchLiveRooms = async () => {
+  // Fetch active rooms without brittle foreign key joins
+  const fetchLiveRooms = useCallback(async () => {
     setLoadingRooms(true);
     try {
       const { data, error } = await supabase
-        .from('rooms')
-        .select('id, name, room_code, created_by, is_active, type, tags, viewer_count, created_at, language, creator:users(id, name, avatar_url)')
-        .eq('is_active', true)
-        .order('created_at', { ascending: false });
+        .from("rooms")
+        .select("id, name, room_code, created_by, is_active, language, created_at, room_type")
+        .eq("is_active", true)
+        .order("created_at", { ascending: false })
+        .limit(30);
 
-      if (error) {
-        console.error("fetchLiveRooms error:", error);
-      } else if (data) {
+      if (!error && data) {
         const parsed = data.map((r: any) => {
           let meta: any = {};
-          if (r.name && r.name.startsWith('{')) {
+          if (r.name && r.name.startsWith("{")) {
             try {
               meta = JSON.parse(r.name);
             } catch {
               meta = { title: r.name };
             }
           } else {
-            meta = { title: r.name || "Live Coding Room", isPrivate: false };
+            meta = { title: r.name || "Live Session" };
           }
-          return { ...r, meta };
-        }).filter((r: any) => !r.meta?.isPrivate && !r.meta?.isLibrary);
+          const isStudy = meta.roomType === "study" || r.room_type === "study";
+          return {
+            ...r,
+            meta,
+            isStudy,
+            title: meta.title || r.name || (isStudy ? "Study Room" : "Coding Workspace"),
+            hostName: meta.authorName || "Host",
+          };
+        }).filter((r: any) => !r.meta?.isLibrary);
+
         setLiveRooms(parsed);
       }
     } catch (err) {
-      console.error("fetchLiveRooms catch:", err);
+      console.error("fetchLiveRooms error:", err);
     } finally {
       setLoadingRooms(false);
     }
-  };
-
-  useEffect(() => {
-    if (activeTab === "live") {
-      fetchLiveRooms();
-    }
-  }, [activeTab]);
-
-  const startLiveRoom = async (type: string) => {
-    const code = Math.random().toString(36).substring(2, 8).toUpperCase();
-    const title = type === 'masterclass' ? "Live Masterclass" : "Co-Working Jam Session";
-    
-    try {
-      const { data, error } = await supabase.from('rooms').insert({
-        name: title,
-        room_code: code,
-        language: "typescript",
-        is_active: true,
-        type: type,
-        created_by: currentUserId || null,
-        viewer_count: 1
-      }).select().single();
-
-      if (!error && data) {
-        router.push(`/room/${data.room_code || code}`);
-      } else {
-        router.push(`/room/${code}`);
-      }
-    } catch (err) {
-      console.error("Error creating room:", err);
-      router.push(`/room/${code}`);
-    }
-  };
-
-  useEffect(() => {
-    if (activeTab === "requests") fetchFollowRequests();
-  }, [activeTab]);
-
-  const handleAcceptRequest = async (followerId: string) => {
-    await supabase.from('follows').update({ status: 'approved' }).eq('follower_id', followerId).eq('following_id', currentUserId);
-    fetchFollowRequests();
-  };
-
-  const handleRejectRequest = async (followerId: string) => {
-    await supabase.from('follows').delete().eq('follower_id', followerId).eq('following_id', currentUserId);
-    fetchFollowRequests();
-  };
-
-  const handlePostComment = async (postId: string) => {
-    const text = commentText[postId];
-    if (!text?.trim() || !currentUserId) return;
-    
-    const { data, error } = await supabase
-      .from("comments")
-      .insert({ post_id: postId, author_id: currentUserId, content: text })
-      .select('*, author:users(name, avatar_url)')
-      .single();
-
-    if (!error && data) {
-      setPosts(prev => prev.map(p => {
-        if (p.id === postId) {
-          return { ...p, comments: [...(p.comments || []), data] };
-        }
-        return p;
-      }));
-      setCommentText(prev => ({ ...prev, [postId]: "" }));
-    }
-  };
+  }, []);
 
   useEffect(() => {
     fetchPosts();
-  }, [activeTab]);
+    fetchLiveRooms();
+  }, [fetchPosts, fetchLiveRooms]);
 
-  // Realtime subscription for posts and rooms
-  useEffect(() => {
-    const channel = supabase
-      .channel("community_live_updates")
-      .on("postgres_changes", { event: "*", schema: "public", table: "posts" }, () => {
-        fetchPosts();
-      })
-      .on("postgres_changes", { event: "*", schema: "public", table: "rooms" }, () => {
-        if (activeTab === "live") fetchLiveRooms();
-      })
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [activeTab]);
-
-  const fetchPosts = async () => {
-    setLoading(true);
-    try {
-      const { data, error } = await supabase
-        .from("posts")
-        .select(`
-          id, content_text, media_url, media_type, created_at, author_id,
-          author:users(id, name, avatar_url, is_public),
-          likes(id, user_id),
-          comments(id, content, created_at, author:users(name, avatar_url))
-        `)
-        .order("created_at", { ascending: false });
-
-      if (error) {
-        console.error("Fetch posts error:", error);
-      } else if (data) {
-        setPosts(data);
-      }
-    } catch (err) {
-      console.error("Error fetching posts:", err);
-    }
-    setLoading(false);
-  };
-
+  // Create post handler
   const handleCreatePost = async () => {
-    if (!newPostContent.trim() || !currentUserId) return;
+    const text = newPostContent.trim();
+    if (!text) return;
     setIsPosting(true);
-    const { data, error } = await supabase
-      .from("posts")
-      .insert({ author_id: currentUserId, content_text: newPostContent, media_type: "text" })
-      .select()
-      .single();
-    
-    if (!error && data) {
-      setNewPostContent("");
-      fetchPosts();
-    } else {
-      alert("Error creating post: " + (error?.message || "Check your connection and permissions."));
-      console.error("Post error:", error);
-    }
+
+    const safeAuthorId = currentUserId || "guest_" + Math.random().toString(36).substring(2, 7);
+    const newPost: CommunityPost = {
+      id: "post_" + Date.now(),
+      author_id: safeAuthorId,
+      author_name: userProfile.name,
+      author_avatar: userProfile.avatar,
+      content_text: text,
+      category: newPostCategory,
+      room_code: attachedRoomCode.trim() || undefined,
+      room_type: attachedRoomCode.trim() ? attachedRoomType : undefined,
+      created_at: new Date().toISOString(),
+      likes: [],
+      comments: [],
+    };
+
+    // Optimistic local update
+    const nextPosts = [newPost, ...posts];
+    persistPosts(nextPosts);
+    setNewPostContent("");
+    setAttachedRoomCode("");
+
+    // Attempt Supabase insert
+    try {
+      await supabase.from("posts").insert({
+        id: newPost.id,
+        author_id: newPost.author_id,
+        author_name: newPost.author_name,
+        author_avatar: newPost.author_avatar,
+        content_text: newPost.content_text,
+        category: newPost.category,
+      });
+    } catch (_) {}
+
     setIsPosting(false);
   };
 
-  const toggleLike = async (postId: string, hasLiked: boolean) => {
-    if (!currentUserId) return;
-    
-    setPosts(prev => prev.map(p => {
+  // Toggle Like
+  const handleToggleLike = async (postId: string) => {
+    const safeUserId = currentUserId || "guest_viewer";
+    const post = posts.find((p) => p.id === postId);
+    if (!post) return;
+
+    const hasLiked = post.likes.some((l) => l.user_id === safeUserId);
+    const updatedLikes = hasLiked
+      ? post.likes.filter((l) => l.user_id !== safeUserId)
+      : [...post.likes, { user_id: safeUserId }];
+
+    const updatedPosts = posts.map((p) => (p.id === postId ? { ...p, likes: updatedLikes } : p));
+    persistPosts(updatedPosts);
+
+    try {
+      if (hasLiked) {
+        await supabase.from("likes").delete().eq("post_id", postId).eq("user_id", safeUserId);
+      } else {
+        await supabase.from("likes").insert({ post_id: postId, user_id: safeUserId });
+      }
+    } catch (_) {}
+  };
+
+  // Add Comment
+  const handleAddComment = async (postId: string) => {
+    const text = (commentInputs[postId] || "").trim();
+    if (!text) return;
+
+    const newComment: CommunityComment = {
+      id: "comment_" + Date.now(),
+      post_id: postId,
+      author_id: currentUserId || "guest_viewer",
+      author_name: userProfile.name,
+      author_avatar: userProfile.avatar,
+      content: text,
+      created_at: new Date().toISOString(),
+    };
+
+    const updatedPosts = posts.map((p) => {
       if (p.id === postId) {
-        const newLikes = hasLiked 
-          ? (p.likes || []).filter((l: any) => l.user_id !== currentUserId)
-          : [...(p.likes || []), { user_id: currentUserId }];
-        return { ...p, likes: newLikes };
+        return { ...p, comments: [...p.comments, newComment] };
       }
       return p;
-    }));
+    });
 
-    if (hasLiked) {
-      await supabase.from("likes").delete().eq("post_id", postId).eq("user_id", currentUserId);
-    } else {
-      await supabase.from("likes").insert({ post_id: postId, user_id: currentUserId });
+    persistPosts(updatedPosts);
+    setCommentInputs((prev) => ({ ...prev, [postId]: "" }));
+    setExpandedComments((prev) => ({ ...prev, [postId]: true }));
+
+    try {
+      await supabase.from("comments").insert({
+        id: newComment.id,
+        post_id: newComment.post_id,
+        author_id: newComment.author_id,
+        author_name: newComment.author_name,
+        content: newComment.content,
+      });
+    } catch (_) {}
+  };
+
+  // Quick Start Room
+  const startRoom = async (type: "coding" | "study") => {
+    const { data: { session } } = await supabase.auth.getSession();
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (session?.access_token) headers["Authorization"] = `Bearer ${session.access_token}`;
+
+    const defaultTitle = type === "study" ? "Live Focus Study Room" : "Live Coding Jam";
+
+    try {
+      const res = await fetch("/api/create-room", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          roomName: defaultTitle,
+          language: "typescript",
+          roomType: type,
+          isPrivate: false,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.id) {
+        if (type === "study") {
+          router.push(`/study/${data.id}`);
+        } else {
+          router.push(`/room/${data.id}`);
+        }
+      } else {
+        // Fallback room code redirect
+        const fallbackCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+        router.push(type === "study" ? `/study/${fallbackCode}` : `/room/${fallbackCode}`);
+      }
+    } catch (_) {
+      const fallbackCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+      router.push(type === "study" ? `/study/${fallbackCode}` : `/room/${fallbackCode}`);
     }
   };
 
-  const handleFollow = async (authorId: string, isPublic: boolean) => {
-    if (!currentUserId) return;
-    const status = isPublic ? 'approved' : 'pending';
-    const { error } = await supabase.from("follows").insert({ follower_id: currentUserId, following_id: authorId, status });
-    if (!error) {
-      alert(isPublic ? "Followed successfully!" : "Follow request sent!");
-    } else {
-      alert("Already following or request pending.");
+  // Copy Post Share Link
+  const handleCopyPostLink = (post: CommunityPost) => {
+    if (typeof window !== "undefined") {
+      const targetUrl = post.room_code
+        ? `${window.location.origin}/join/${post.room_code}`
+        : `${window.location.origin}/feed`;
+      navigator.clipboard.writeText(targetUrl);
+      setCopiedLinkPostId(post.id);
+      setTimeout(() => setCopiedLinkPostId(null), 2000);
     }
   };
+
+  // Filtered Posts
+  const filteredPosts = useMemo(() => {
+    return posts.filter((p) => {
+      const matchesCategory =
+        selectedCategory === "all" ||
+        (selectedCategory === "study" && (p.category === "study" || p.room_type === "study")) ||
+        (selectedCategory === "showcase" && p.category === "showcase") ||
+        (selectedCategory === "qna" && p.category === "qna");
+
+      const matchesSearch =
+        !searchQuery.trim() ||
+        p.content_text.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        p.author_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (p.room_code && p.room_code.toLowerCase().includes(searchQuery.toLowerCase()));
+
+      return matchesCategory && matchesSearch;
+    });
+  }, [posts, selectedCategory, searchQuery]);
 
   return (
-    <div className="flex flex-col gap-6 w-full max-w-4xl mx-auto">
-      
-      {/* Tabs */}
-      <div className="flex gap-3 border-b border-gray-200 dark:border-white/10 pb-4">
-        <button 
-          onClick={() => setActiveTab("feed")}
-          className={`px-5 py-2.5 rounded-xl font-bold text-sm transition-all flex items-center gap-2 ${
-            activeTab === "feed" 
-              ? "bg-indigo-600 text-white shadow-lg shadow-indigo-500/25" 
-              : "bg-gray-100 dark:bg-white/5 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/10"
-          }`}
-        >
-          <MessageSquare size={16} /> Developer Feed
-        </button>
-        <button 
-          onClick={() => setActiveTab("live")}
-          className={`px-5 py-2.5 rounded-xl font-bold text-sm transition-all flex items-center gap-2 ${
-            activeTab === "live" 
-              ? "bg-sky-600 text-white shadow-lg shadow-sky-500/25" 
-              : "bg-gray-100 dark:bg-white/5 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/10"
-          }`}
-        >
-          <Radio size={16} /> Live Hub {liveRooms.length > 0 && <span className="bg-red-500 text-white text-[10px] px-1.5 py-0.5 rounded-full font-bold">{liveRooms.length}</span>}
-        </button>
-        <button 
-          onClick={() => setActiveTab("requests")}
-          className={`px-5 py-2.5 rounded-xl font-bold text-sm transition-all flex items-center gap-2 ${
-            activeTab === "requests" 
-              ? "bg-pink-600 text-white shadow-lg shadow-pink-500/25" 
-              : "bg-gray-100 dark:bg-white/5 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/10"
-          }`}
-        >
-          <Users size={16} /> Requests {followRequests.length > 0 && <span className="bg-red-500 text-white text-[10px] px-1.5 py-0.5 rounded-full font-bold">{followRequests.length}</span>}
-        </button>
+    <div className="flex flex-col gap-6 w-full max-w-4xl mx-auto font-['DM_Sans',sans-serif]">
+      {/* Top Navigation Tabs */}
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#2B3340]/60 pb-3">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setActiveTab("feed")}
+            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold flex items-center gap-2 transition-all ${
+              activeTab === "feed"
+                ? "bg-[#3DD6B0] text-[#0E1116] shadow-lg shadow-[#3DD6B0]/20"
+                : "bg-[#141920] hover:bg-[#1C232D] text-[#8B97A7] border border-[#2B3340]/50"
+            }`}
+          >
+            <MessageSquare size={15} /> Community Feed
+          </button>
+          <button
+            onClick={() => setActiveTab("live")}
+            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold flex items-center gap-2 transition-all ${
+              activeTab === "live"
+                ? "bg-[#82AAFF] text-[#0E1116] shadow-lg shadow-[#82AAFF]/20"
+                : "bg-[#141920] hover:bg-[#1C232D] text-[#8B97A7] border border-[#2B3340]/50"
+            }`}
+          >
+            <Radio size={15} /> Live Sessions & Hub
+            {liveRooms.length > 0 && (
+              <span className="bg-[#FF8A8A] text-[#0E1116] text-[10px] px-1.5 py-0.2 rounded-full font-black">
+                {liveRooms.length}
+              </span>
+            )}
+          </button>
+        </div>
+
+        {/* Search Bar */}
+        <div className="flex items-center gap-2 bg-[#141920] border border-[#2B3340]/60 rounded-xl px-3 py-1.5 w-full sm:w-auto">
+          <Search size={14} className="text-[#8B97A7]" />
+          <input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search discussions & rooms..."
+            className="bg-transparent border-none outline-none text-xs text-[#E6EDF3] placeholder-[#8B97A7] w-full sm:w-48"
+          />
+        </div>
       </div>
 
-      {/* FEED VIEW */}
+      {/* FEED TAB */}
       {activeTab === "feed" && (
-        <div className="flex flex-col gap-6 animate-fade-in">
-          {/* Create Post Box */}
-          <div className="bg-white dark:bg-[#151515] border border-gray-200 dark:border-white/10 rounded-2xl p-5 shadow-sm transition-colors">
-            <div className="flex gap-4">
-              <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-indigo-500 to-sky-500 flex items-center justify-center text-white font-bold flex-shrink-0 text-sm shadow-md">
-                You
+        <div className="flex flex-col gap-5">
+          {/* Create Post Card */}
+          <div className="rounded-2xl border border-[#2B3340]/80 bg-[#141920] p-4.5 shadow-xl">
+            <div className="flex gap-3">
+              <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-[#1F5A4D] to-[#3DD6B0] flex items-center justify-center text-[#0E1116] font-black text-sm flex-shrink-0 shadow-md">
+                {userProfile.name.slice(0, 2).toUpperCase()}
               </div>
-              <textarea 
-                value={newPostContent}
-                onChange={(e) => setNewPostContent(e.target.value)}
-                placeholder="Share a project, snippet, or ask a question to the community..." 
-                className="w-full bg-transparent border-none resize-none focus:outline-none text-[15px] text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 pt-1 min-h-[70px]"
-              />
+              <div className="flex-1">
+                <textarea
+                  value={newPostContent}
+                  onChange={(e) => setNewPostContent(e.target.value)}
+                  placeholder="Share a project update, study room invite, question, or snippet..."
+                  className="w-full bg-transparent border-none resize-none focus:outline-none text-[14px] text-[#E6EDF3] placeholder-[#8B97A7] min-h-[70px]"
+                />
+              </div>
             </div>
-            <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-100 dark:border-white/5">
-              <div className="flex gap-2">
-                <button onClick={() => { const url = prompt("Enter video or image URL:"); if (url) setNewPostContent(p => p + "\n" + url); }} className="p-2 text-sky-500 hover:bg-sky-50 dark:hover:bg-sky-500/10 rounded-full transition-colors cursor-pointer" title="Upload Video/Image">
-                  <Video size={18} />
-                </button>
-                <button onClick={() => { const url = prompt("Enter workspace link:"); if (url) setNewPostContent(p => p + "\n[Workspace Attachment](" + url + ")"); }} className="p-2 text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 rounded-full transition-colors cursor-pointer" title="Attach Live Workspace">
-                  <Folder size={18} />
-                </button>
+
+            {/* Optional Room Attachment Input */}
+            <div className="mt-2 pt-2 border-t border-[#232A35] flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={newPostCategory}
+                  onChange={(e) => setNewPostCategory(e.target.value)}
+                  className="bg-[#0E1116] border border-[#2B3340] text-xs text-[#E6EDF3] rounded-lg px-2.5 py-1.5 outline-none cursor-pointer"
+                >
+                  <option value="general">💬 General Update</option>
+                  <option value="study">📚 Study Session / Hub</option>
+                  <option value="showcase">💻 Project Showcase</option>
+                  <option value="qna">💡 Ask Question</option>
+                </select>
+
+                <div className="flex items-center gap-1 bg-[#0E1116] border border-[#2B3340] rounded-lg px-2 py-1 text-xs">
+                  <span className="text-[#8B97A7]">Attach Room:</span>
+                  <input
+                    value={attachedRoomCode}
+                    onChange={(e) => setAttachedRoomCode(e.target.value.toUpperCase())}
+                    placeholder="e.g. FOCUS1"
+                    className="bg-transparent border-none outline-none font-mono text-[#3DD6B0] w-20 text-xs font-bold"
+                  />
+                  {attachedRoomCode && (
+                    <select
+                      value={attachedRoomType}
+                      onChange={(e) => setAttachedRoomType(e.target.value as any)}
+                      className="bg-[#141920] border-none text-[11px] text-[#82AAFF] rounded outline-none"
+                    >
+                      <option value="study">Study</option>
+                      <option value="coding">Coding</option>
+                    </select>
+                  )}
+                </div>
               </div>
-              <button 
+
+              <button
                 onClick={handleCreatePost}
                 disabled={isPosting || !newPostContent.trim()}
-                className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold text-sm rounded-full transition-colors shadow-md flex items-center gap-1.5"
+                className="px-5 py-2 bg-[#3DD6B0] hover:bg-[#34c4a1] disabled:opacity-40 text-[#0E1116] font-bold text-xs rounded-xl transition-all shadow-md flex items-center gap-1.5 active:scale-95"
               >
-                <Send size={14} />
-                {isPosting ? "Posting..." : "Post"}
+                <Send size={13} />
+                {isPosting ? "Posting..." : "Share to Community"}
               </button>
             </div>
           </div>
 
-          {/* Posts Feed */}
+          {/* Category Filter Pills */}
+          <div className="flex flex-wrap gap-2 items-center">
+            {[
+              { id: "all", label: "🌟 All Posts" },
+              { id: "study", label: "📚 Study Sessions" },
+              { id: "showcase", label: "💻 Code Showcases" },
+              { id: "qna", label: "💡 Q&A & Advice" },
+            ].map((cat) => (
+              <button
+                key={cat.id}
+                onClick={() => setSelectedCategory(cat.id)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                  selectedCategory === cat.id
+                    ? "bg-[#1F5A4D] text-[#3DD6B0] border border-[#3DD6B0]/50"
+                    : "bg-[#141920] text-[#8B97A7] hover:text-[#E6EDF3] border border-[#2B3340]/40"
+                }`}
+              >
+                {cat.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Posts List */}
           {loading ? (
-            <div className="py-12 text-center text-gray-500 flex flex-col items-center gap-2">
-              <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-              <span className="text-xs">Loading developer feed...</span>
+            <div className="py-16 text-center text-[#8B97A7] flex flex-col items-center gap-2">
+              <div className="w-6 h-6 border-2 border-[#3DD6B0] border-t-transparent rounded-full animate-spin" />
+              <span className="text-xs">Loading community discussions...</span>
             </div>
-          ) : posts.length === 0 ? (
-            <div className="py-12 text-center text-gray-400 bg-white dark:bg-[#151515] rounded-xl border border-gray-200 dark:border-white/10 p-8">
-              <Code2 size={32} className="mx-auto mb-2 opacity-40 text-indigo-500" />
-              <p className="font-semibold text-gray-300">No posts yet</p>
-              <p className="text-xs text-gray-500 mt-1">Be the first to share a coding update, question, or project with the community!</p>
+          ) : filteredPosts.length === 0 ? (
+            <div className="py-14 text-center rounded-2xl border border-[#2B3340]/60 bg-[#141920] p-8">
+              <Code2 size={36} className="mx-auto mb-2 text-[#8B97A7] opacity-50" />
+              <p className="font-bold text-[#E6EDF3]">No posts matching this filter</p>
+              <p className="text-xs text-[#8B97A7] mt-1">Be the first to share an update or question with the community!</p>
             </div>
-          ) : posts.map(post => {
-            const author = Array.isArray(post.author) ? post.author[0] : post.author;
-            const hasLiked = (post.likes || []).some((l: any) => l.user_id === currentUserId);
-            
-            return (
-              <div key={post.id} className="bg-white dark:bg-[#151515] border border-gray-200 dark:border-white/10 rounded-2xl p-5 shadow-sm transition-colors">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-gray-200 dark:bg-gray-800 flex items-center justify-center text-gray-700 dark:text-gray-300 font-bold overflow-hidden text-sm">
-                      {author?.avatar_url ? (
-                        <img src={author.avatar_url} alt="avatar" className="w-full h-full object-cover" />
-                      ) : (
-                        (author?.name || "U").charAt(0).toUpperCase()
-                      )}
+          ) : (
+            filteredPosts.map((post) => {
+              const safeUserId = currentUserId || "guest_viewer";
+              const hasLiked = post.likes.some((l) => l.user_id === safeUserId);
+              const isStudyPost = post.category === "study" || post.room_type === "study";
+
+              return (
+                <article
+                  key={post.id}
+                  className="rounded-2xl border border-[#2B3340]/70 bg-[#141920] p-5 shadow-lg flex flex-col gap-3.5 transition-all hover:border-[#2B3340]"
+                >
+                  {/* Post Header */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-full bg-[#1C232D] border border-[#2B3340] flex items-center justify-center font-bold text-xs text-[#3DD6B0] overflow-hidden">
+                        {post.author_avatar ? (
+                          <img src={post.author_avatar} alt={post.author_name} className="w-full h-full object-cover" />
+                        ) : (
+                          post.author_name.slice(0, 2).toUpperCase()
+                        )}
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h4 className="font-bold text-sm text-[#E6EDF3]">{post.author_name}</h4>
+                          {isStudyPost && (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#12342E] text-[#3DD6B0] border border-[#1F5A4D]">
+                              📚 Study Hub
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-[11px] text-[#8B97A7]">
+                          {new Date(post.created_at).toLocaleDateString()} · {new Date(post.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                        </span>
+                      </div>
                     </div>
-                    <div>
-                      <h4 className="font-bold flex items-center gap-2 text-sm text-gray-900 dark:text-white">
-                        {author?.name || "Developer"}
-                        {!author?.is_public && <span title="Private Profile"><Lock size={12} className="text-gray-400" /></span>}
-                      </h4>
-                      <span className="text-xs text-gray-500">{new Date(post.created_at).toLocaleString()}</span>
-                    </div>
-                  </div>
-                  
-                  <div className="flex items-center gap-2">
-                    {author?.id && author?.id !== currentUserId && (
-                      <button onClick={() => handleFollow(author?.id, author?.is_public)} className="px-3 py-1 text-xs font-bold bg-gray-100 dark:bg-white/10 text-gray-800 dark:text-white rounded-full hover:bg-gray-200 dark:hover:bg-white/20 transition-colors">
-                        Follow
+
+                    {/* Room Jump Badge if attached */}
+                    {post.room_code && (
+                      <button
+                        onClick={() =>
+                          router.push(post.room_type === "study" ? `/study/${post.room_code}` : `/room/${post.room_code}`)
+                        }
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#12342E] hover:bg-[#1a4a42] border border-[#1F5A4D] text-[#3DD6B0] text-xs font-bold transition-all shadow-sm active:scale-95"
+                      >
+                        <Sparkles size={13} />
+                        <span>Join Room #{post.room_code}</span>
                       </button>
                     )}
                   </div>
-                </div>
-                
-                <p className="text-[14px] leading-relaxed mb-4 text-gray-800 dark:text-gray-200 whitespace-pre-wrap">{post.content_text}</p>
 
-                {post.media_type === "image" && post.media_url && (
-                  <div className="rounded-xl overflow-hidden mb-4 border border-gray-100 dark:border-white/5 bg-gray-100 dark:bg-black">
-                    <img src={post.media_url} alt="Post media" className="w-full h-auto object-cover max-h-[400px]" />
-                  </div>
-                )}
+                  {/* Post Body */}
+                  <p className="text-[14px] leading-relaxed text-[#E6EDF3] whitespace-pre-wrap">
+                    {post.content_text}
+                  </p>
 
-                <div className="flex items-center justify-between border-t border-gray-100 dark:border-white/5 pt-3 text-gray-500 dark:text-gray-400 text-xs">
-                  <div className="flex gap-5">
-                    <button onClick={() => toggleLike(post.id, hasLiked)} className={`flex items-center gap-1.5 transition-colors cursor-pointer ${hasLiked ? 'text-pink-500' : 'hover:text-pink-500'}`}>
-                      <Heart size={16} fill={hasLiked ? "currentColor" : "none"} /> <span>{post.likes?.length || 0}</span>
-                    </button>
-                    <div className="flex items-center gap-1.5">
-                      <MessageSquare size={16} /> <span>{post.comments?.length || 0}</span>
+                  {/* Actions Bar */}
+                  <div className="flex items-center justify-between border-t border-[#232A35] pt-3 text-xs text-[#8B97A7]">
+                    <div className="flex items-center gap-5">
+                      <button
+                        onClick={() => handleToggleLike(post.id)}
+                        className={`flex items-center gap-1.5 transition-colors ${
+                          hasLiked ? "text-[#FF8A8A]" : "hover:text-[#FF8A8A]"
+                        }`}
+                      >
+                        <Heart size={15} fill={hasLiked ? "currentColor" : "none"} />
+                        <span className="font-semibold">{post.likes.length}</span>
+                      </button>
+
+                      <button
+                        onClick={() =>
+                          setExpandedComments((prev) => ({ ...prev, [post.id]: !prev[post.id] }))
+                        }
+                        className="flex items-center gap-1.5 hover:text-[#82AAFF] transition-colors"
+                      >
+                        <MessageSquare size={15} />
+                        <span className="font-semibold">{post.comments.length} comments</span>
+                      </button>
                     </div>
+
+                    <button
+                      onClick={() => handleCopyPostLink(post)}
+                      className="flex items-center gap-1.5 hover:text-[#3DD6B0] transition-colors"
+                      title="Copy link to room or post"
+                    >
+                      {copiedLinkPostId === post.id ? (
+                        <>
+                          <Check size={14} className="text-[#3DD6B0]" />
+                          <span className="text-[#3DD6B0] font-bold">Copied!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Share2 size={14} />
+                          <span>Share</span>
+                        </>
+                      )}
+                    </button>
                   </div>
-                </div>
-                
-                {/* Comments List */}
-                {post.comments && post.comments.length > 0 && (
-                  <div className="mt-3 pt-3 border-t border-gray-100 dark:border-white/5 flex flex-col gap-2">
-                    {post.comments.map((c: any) => {
-                      const cAuthor = Array.isArray(c.author) ? c.author[0] : c.author;
-                      return (
-                        <div key={c.id} className="flex gap-2 text-xs bg-gray-50 dark:bg-white/5 p-2 rounded-lg">
-                          <span className="font-bold text-gray-900 dark:text-white shrink-0">{cAuthor?.name || "User"}:</span>
-                          <span className="text-gray-600 dark:text-gray-300">{c.content}</span>
+
+                  {/* Comments Section */}
+                  {expandedComments[post.id] && (
+                    <div className="flex flex-col gap-2.5 pt-2 border-t border-[#232A35]/60 animate-fadeIn">
+                      {post.comments.map((comment) => (
+                        <div
+                          key={comment.id}
+                          className="rounded-xl bg-[#0E1116] border border-[#232A35] p-2.5 flex flex-col gap-1 text-xs"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-[#E6EDF3]">{comment.author_name}</span>
+                            <span className="text-[10px] text-[#8B97A7]">
+                              {new Date(comment.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                            </span>
+                          </div>
+                          <p className="text-[#C1CAD6]">{comment.content}</p>
                         </div>
-                      );
-                    })}
-                  </div>
-                )}
-                
-                {/* Comment Input */}
-                <div className="mt-3 flex gap-2">
-                  <input 
-                    type="text" 
-                    placeholder="Write a comment..."
-                    value={commentText[post.id] || ""}
-                    onChange={(e) => setCommentText(prev => ({ ...prev, [post.id]: e.target.value }))}
-                    onKeyDown={(e) => e.key === 'Enter' && handlePostComment(post.id)}
-                    className="flex-1 bg-gray-100 dark:bg-white/5 border border-transparent focus:border-indigo-500 rounded-full px-4 py-1.5 text-xs focus:outline-none dark:text-white transition-colors"
-                  />
-                  <button 
-                    onClick={() => handlePostComment(post.id)}
-                    disabled={!commentText[post.id]?.trim()}
-                    className="p-1.5 px-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-full disabled:opacity-30 transition-colors text-xs font-semibold"
-                  >
-                    Reply
-                  </button>
-                </div>
-              </div>
-            );
-          })}
+                      ))}
+
+                      {/* Reply Box */}
+                      <div className="flex items-center gap-2 mt-1">
+                        <input
+                          value={commentInputs[post.id] || ""}
+                          onChange={(e) =>
+                            setCommentInputs((prev) => ({ ...prev, [post.id]: e.target.value }))
+                          }
+                          onKeyDown={(e) => e.key === "Enter" && handleAddComment(post.id)}
+                          placeholder="Write a comment..."
+                          className="flex-1 rounded-xl bg-[#0E1116] border border-[#2B3340] px-3 py-1.5 text-xs text-[#E6EDF3] outline-none focus:border-[#3DD6B0]"
+                        />
+                        <button
+                          onClick={() => handleAddComment(post.id)}
+                          className="px-3.5 py-1.5 bg-[#1F5A4D] hover:bg-[#287262] text-[#3DD6B0] rounded-xl text-xs font-bold transition-all"
+                        >
+                          Reply
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </article>
+              );
+            })
+          )}
         </div>
       )}
 
-      {/* LIVE HUB VIEW (REAL DATA & REAL CREATION) */}
+      {/* LIVE SESSIONS & HUB TAB */}
       {activeTab === "live" && (
-        <div className="flex flex-col gap-8 animate-fade-in w-full">
-          {/* Action cards to start live sessions */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            <div 
-              onClick={() => startLiveRoom('masterclass')}
-              className="bg-gradient-to-br from-indigo-600 to-indigo-800 rounded-2xl p-6 shadow-xl shadow-indigo-900/20 text-white cursor-pointer hover:-translate-y-1 transition-all border border-indigo-500/50 flex flex-col justify-between"
+        <div className="flex flex-col gap-6">
+          {/* Quick Session Launchers */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div
+              onClick={() => startRoom("study")}
+              className="rounded-2xl p-5 bg-gradient-to-br from-[#12342E] to-[#141920] border border-[#1F5A4D] text-[#E6EDF3] cursor-pointer hover:border-[#3DD6B0] transition-all shadow-xl group flex flex-col justify-between"
             >
               <div>
-                <div className="bg-white/20 w-11 h-11 rounded-xl flex items-center justify-center mb-3">
-                  <PlayCircle size={24} />
+                <div className="w-10 h-10 rounded-xl bg-[#1F5A4D]/50 border border-[#3DD6B0]/40 flex items-center justify-center mb-3 text-[#3DD6B0]">
+                  <BookOpen size={20} />
                 </div>
-                <h3 className="text-lg font-black mb-1.5">Start Masterclass</h3>
-                <p className="text-indigo-100 text-xs mb-4">Start a 1-to-many broadcast teaching session with synchronized editor, audio, and terminal.</p>
+                <h3 className="text-base font-bold text-white mb-1 group-hover:text-[#3DD6B0] transition-colors">
+                  Start Atmospheric Study Room
+                </h3>
+                <p className="text-xs text-[#8B97A7] mb-4">
+                  Multi-modal study space with ambient soundscapes, Pomodoro timer, whiteboard, and SFU video.
+                </p>
               </div>
-              <button 
-                onClick={(e) => { e.stopPropagation(); startLiveRoom('masterclass'); }}
-                className="flex items-center justify-center gap-2 bg-white text-indigo-700 px-4 py-2 rounded-xl font-bold text-xs hover:bg-gray-100 transition-colors shadow"
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  startRoom("study");
+                }}
+                className="w-full py-2 bg-[#3DD6B0] hover:bg-[#34c4a1] text-[#0E1116] rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-md"
               >
-                <Plus size={15} /> Create Masterclass Room
+                <Plus size={14} /> Launch Study Room →
               </button>
             </div>
 
-            <div 
-              onClick={() => startLiveRoom('coworking')}
-              className="bg-gradient-to-br from-emerald-600 to-emerald-800 rounded-2xl p-6 shadow-xl shadow-emerald-900/20 text-white cursor-pointer hover:-translate-y-1 transition-all border border-emerald-500/50 flex flex-col justify-between"
+            <div
+              onClick={() => startRoom("coding")}
+              className="rounded-2xl p-5 bg-gradient-to-br from-[#1A233A] to-[#141920] border border-[#2B3340] text-[#E6EDF3] cursor-pointer hover:border-[#82AAFF] transition-all shadow-xl group flex flex-col justify-between"
             >
               <div>
-                <div className="bg-white/20 w-11 h-11 rounded-xl flex items-center justify-center mb-3">
-                  <Users size={24} />
+                <div className="w-10 h-10 rounded-xl bg-[#28385E]/50 border border-[#82AAFF]/40 flex items-center justify-center mb-3 text-[#82AAFF]">
+                  <Code2 size={20} />
                 </div>
-                <h3 className="text-lg font-black mb-1.5">Start Jam Session</h3>
-                <p className="text-emerald-100 text-xs mb-4">Open a casual P2P room with pomodoro timer, live voice/video, and collaborative editing.</p>
+                <h3 className="text-base font-bold text-white mb-1 group-hover:text-[#82AAFF] transition-colors">
+                  Start Live Coding Jam
+                </h3>
+                <p className="text-xs text-[#8B97A7] mb-4">
+                  Synchronized Monaco code editor, browser execution, WebContainer terminal, and WebRTC stage.
+                </p>
               </div>
-              <button 
-                onClick={(e) => { e.stopPropagation(); startLiveRoom('coworking'); }}
-                className="flex items-center justify-center gap-2 bg-white text-emerald-700 px-4 py-2 rounded-xl font-bold text-xs hover:bg-gray-100 transition-colors shadow"
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  startRoom("coding");
+                }}
+                className="w-full py-2 bg-[#82AAFF] hover:bg-[#6e99f5] text-[#0E1116] rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-md"
               >
-                <Plus size={15} /> Create Jam Session Room
+                <Plus size={14} /> Launch Coding Jam →
               </button>
             </div>
           </div>
 
-          {/* Active Live Rooms List */}
-          <div>
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-black flex items-center gap-2 text-gray-900 dark:text-white">
-                <span className="relative flex h-3 w-3">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+          {/* Active Live Rooms Grid */}
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-[#E6EDF3] flex items-center gap-2">
+                <span className="relative flex h-2.5 w-2.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#3DD6B0] opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#3DD6B0]"></span>
                 </span>
-                Active Rooms ({liveRooms.length})
+                Active Live Rooms ({liveRooms.length})
               </h3>
-              <button 
-                onClick={fetchLiveRooms} 
-                className="text-xs text-gray-500 hover:text-white transition-colors cursor-pointer"
+              <button
+                onClick={fetchLiveRooms}
+                className="text-xs text-[#8B97A7] hover:text-[#E6EDF3] transition-colors"
               >
-                ↻ Refresh
+                ↻ Refresh List
               </button>
             </div>
-            
+
             {loadingRooms ? (
-              <div className="py-12 text-center text-gray-500 flex flex-col items-center gap-2">
-                <div className="w-6 h-6 border-2 border-sky-500 border-t-transparent rounded-full animate-spin" />
-                <span className="text-xs">Loading active rooms...</span>
-              </div>
+              <div className="py-12 text-center text-[#8B97A7] text-xs">Loading active rooms...</div>
             ) : liveRooms.length === 0 ? (
-              <div className="py-12 text-center bg-white dark:bg-[#151515] rounded-xl border border-gray-200 dark:border-white/10 p-8">
-                <Radio size={36} className="mx-auto mb-2 opacity-30 text-sky-400" />
-                <p className="font-semibold text-gray-300">No live rooms active right now</p>
-                <p className="text-xs text-gray-500 mt-1 mb-4">Start your own live session above and invite peers to code together!</p>
-                <div className="flex justify-center gap-3">
-                  <button onClick={() => startLiveRoom('masterclass')} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors">
-                    <Plus size={14} /> New Masterclass
-                  </button>
-                  <button onClick={() => startLiveRoom('coworking')} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors">
-                    <Plus size={14} /> New Jam Session
-                  </button>
-                </div>
+              <div className="rounded-2xl border border-[#2B3340]/60 bg-[#141920] p-8 text-center">
+                <Radio size={36} className="mx-auto mb-2 text-[#8B97A7] opacity-40" />
+                <p className="font-bold text-[#E6EDF3]">No active public rooms right now</p>
+                <p className="text-xs text-[#8B97A7] mt-1 mb-4">
+                  Launch an atmospheric study room or coding jam above to invite your peers!
+                </p>
               </div>
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {liveRooms.map((room) => {
-                  const title = room.meta?.title || room.name || "Live Coding Session";
-                  const host = room.creator?.name || room.meta?.authorName || "CodeTogether Host";
-                  const initial = host.charAt(0).toUpperCase();
-                  const tags = Array.isArray(room.tags) && room.tags.length > 0 ? room.tags : [room.language || "TypeScript"];
-                  const code = room.room_code || room.id;
+                  const targetUrl = room.isStudy ? `/study/${room.room_code || room.id}` : `/room/${room.room_code || room.id}`;
 
                   return (
-                    <div 
-                      key={room.id} 
-                      onClick={() => router.push(`/room/${code}`)}
-                      className="bg-white dark:bg-[#151515] border border-gray-200 dark:border-white/10 rounded-xl overflow-hidden hover:border-sky-500/60 hover:shadow-lg transition-all cursor-pointer group shadow-sm flex flex-col justify-between"
+                    <div
+                      key={room.id}
+                      onClick={() => router.push(targetUrl)}
+                      className={`rounded-2xl border p-4 bg-[#141920] cursor-pointer transition-all hover:-translate-y-0.5 shadow-md flex flex-col justify-between ${
+                        room.isStudy
+                          ? "border-[#1F5A4D] hover:border-[#3DD6B0]"
+                          : "border-[#2B3340] hover:border-[#82AAFF]"
+                      }`}
                     >
                       <div>
-                        <div className="h-20 bg-gradient-to-r from-gray-200 to-gray-300 dark:from-[#1e1e2d] dark:to-[#12121a] relative p-3 flex justify-between items-start">
-                          <div className="bg-red-500 text-white text-[10px] font-black px-2 py-0.5 rounded flex items-center gap-1 shadow-sm">
-                            LIVE <Users size={10}/> {room.viewer_count || 1}
-                          </div>
-                          <div className="bg-black/60 backdrop-blur-md text-white text-[9px] font-bold px-2 py-0.5 rounded uppercase">
-                            {room.type === 'masterclass' ? "Masterclass" : "Jam Session"}
-                          </div>
+                        <div className="flex items-center justify-between mb-2">
+                          <span
+                            className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                              room.isStudy
+                                ? "bg-[#12342E] text-[#3DD6B0] border border-[#1F5A4D]"
+                                : "bg-[#1A233A] text-[#82AAFF] border border-[#28385E]"
+                            }`}
+                          >
+                            {room.isStudy ? "📚 Study Hub" : "💻 Coding Jam"}
+                          </span>
+                          <span className="font-mono text-[11px] text-[#8B97A7]">
+                            #{room.room_code}
+                          </span>
                         </div>
-                        <div className="p-4 relative pt-5">
-                          <div className="w-9 h-9 rounded-full bg-white dark:bg-[#1c1c24] border-2 border-gray-100 dark:border-[#151515] absolute -top-4.5 flex items-center justify-center font-bold shadow-sm overflow-hidden text-xs">
-                            {room.creator?.avatar_url ? (
-                              <img src={room.creator.avatar_url} alt={host} className="w-full h-full object-cover" />
-                            ) : (
-                              initial
-                            )}
-                          </div>
-                          <h4 className="font-bold text-sm mb-1 group-hover:text-sky-400 transition-colors truncate" title={title}>
-                            {title}
-                          </h4>
-                          <p className="text-xs text-gray-500 mb-3 truncate">Host: {host}</p>
-                          <div className="flex flex-wrap gap-1">
-                            {tags.map((tag: string) => (
-                              <span key={tag} className="text-[10px] bg-gray-100 dark:bg-white/5 text-gray-600 dark:text-gray-300 px-2 py-0.5 rounded">
-                                {tag}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
+
+                        <h4 className="font-bold text-sm text-[#E6EDF3] mb-1 truncate" title={room.title}>
+                          {room.title}
+                        </h4>
+                        <p className="text-xs text-[#8B97A7] mb-3">Host: {room.hostName}</p>
                       </div>
-                      <div className="p-3 pt-0">
-                        <button className="w-full py-1.5 bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 font-bold rounded-lg text-xs group-hover:bg-indigo-600 group-hover:text-white transition-colors">
-                          Join Room →
-                        </button>
-                      </div>
+
+                      <button
+                        className={`w-full py-1.5 rounded-xl font-bold text-xs transition-colors flex items-center justify-center gap-1 ${
+                          room.isStudy
+                            ? "bg-[#12342E] text-[#3DD6B0] hover:bg-[#3DD6B0] hover:text-[#0E1116]"
+                            : "bg-[#1A233A] text-[#82AAFF] hover:bg-[#82AAFF] hover:text-[#0E1116]"
+                        }`}
+                      >
+                        Enter Room →
+                      </button>
                     </div>
                   );
                 })}
@@ -545,41 +836,6 @@ export default function CommunityFeed({ currentUserId }: { currentUserId: string
           </div>
         </div>
       )}
-    
-      {/* FOLLOW REQUESTS VIEW */}
-      {activeTab === "requests" && (
-        <div className="flex flex-col gap-6 animate-fade-in w-full max-w-2xl mx-auto">
-          <h3 className="text-lg font-black text-gray-900 dark:text-white">Follow Requests</h3>
-          {followRequests.length === 0 ? (
-            <div className="py-12 text-center text-gray-500 bg-white dark:bg-[#151515] rounded-xl border border-gray-200 dark:border-white/10 p-6">
-              No pending follow requests.
-            </div>
-          ) : (
-            followRequests.map(req => {
-              const follower = Array.isArray(req.follower) ? req.follower[0] : req.follower;
-              return (
-                <div key={req.follower_id} className="bg-white dark:bg-[#151515] border border-gray-200 dark:border-white/10 rounded-xl p-4 flex items-center justify-between shadow-sm">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-gray-200 dark:bg-gray-800 flex items-center justify-center font-bold overflow-hidden">
-                      {follower?.avatar_url ? (
-                        <img src={follower.avatar_url} alt="avatar" className="w-full h-full object-cover" />
-                      ) : (
-                        (follower?.name || "U").charAt(0).toUpperCase()
-                      )}
-                    </div>
-                    <span className="font-bold text-sm text-gray-900 dark:text-white">{follower?.name || "Developer"}</span>
-                  </div>
-                  <div className="flex gap-2">
-                    <button onClick={() => handleAcceptRequest(follower?.id)} className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-full text-xs transition-colors">Accept</button>
-                    <button onClick={() => handleRejectRequest(follower?.id)} className="px-4 py-1.5 bg-gray-200 dark:bg-white/10 hover:bg-gray-300 dark:hover:bg-white/20 text-gray-800 dark:text-white font-bold rounded-full text-xs transition-colors">Delete</button>
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </div>
-      )}
-
     </div>
   );
 }

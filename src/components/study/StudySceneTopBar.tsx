@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Home, Video, VideoOff, Copy, Check, Flame } from "lucide-react";
+import { Home, Video, VideoOff, Copy, Check, Flame, Share2 } from "lucide-react";
 
 interface StudySceneTopBarProps {
   roomName: string;
@@ -38,14 +38,23 @@ export default function StudySceneTopBar({
   onToggleCamera,
 }: StudySceneTopBarProps) {
   const router = useRouter();
-  const [copied, setCopied] = useState(false);
+  const [copiedCode, setCopiedCode] = useState(false);
+  const [copiedInvite, setCopiedInvite] = useState(false);
+
+  const handleCopyCode = () => {
+    if (typeof window !== "undefined" && roomCode) {
+      navigator.clipboard.writeText(roomCode);
+      setCopiedCode(true);
+      setTimeout(() => setCopiedCode(false), 2000);
+    }
+  };
 
   const handleCopyInvite = () => {
-    if (typeof window !== "undefined") {
-      const inviteUrl = `${window.location.origin}/study/${roomCode}`;
+    if (typeof window !== "undefined" && roomCode) {
+      const inviteUrl = `${window.location.origin}/join/${roomCode}`;
       navigator.clipboard.writeText(inviteUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      setCopiedInvite(true);
+      setTimeout(() => setCopiedInvite(false), 2000);
     }
   };
 
@@ -94,18 +103,31 @@ export default function StudySceneTopBar({
       {/* Right controls */}
       <div className="flex items-center gap-2 pointer-events-auto">
         {/* Room name chip */}
-        <div className="h-10 px-4 hidden sm:flex items-center rounded-xl bg-[#0E1116]/80 border border-[#2B3340]/60 text-xs font-medium text-[#E6EDF3] backdrop-blur-md shadow-md truncate max-w-[220px]">
+        <div className="h-10 px-4 hidden md:flex items-center rounded-xl bg-[#0E1116]/80 border border-[#2B3340]/60 text-xs font-medium text-[#E6EDF3] backdrop-blur-md shadow-md truncate max-w-[200px]">
           {parseRoomTitle(roomName)}
         </div>
+
+        {/* Copy Room Code Pill */}
+        <button
+          onClick={handleCopyCode}
+          aria-label="Copy room code"
+          className="h-10 px-3 flex items-center gap-1.5 rounded-xl bg-[#0E1116]/80 hover:bg-[#141920] border border-[#2B3340]/60 text-xs font-mono font-bold text-[#82AAFF] backdrop-blur-md shadow-md transition-all active:scale-95"
+          title="Click to copy room code"
+        >
+          <span className="text-[#8B97A7] font-sans text-[11px]">#</span>
+          <span>{roomCode}</span>
+          {copiedCode ? <Check size={13} className="text-[#3DD6B0]" /> : <Copy size={13} className="text-[#8B97A7]" />}
+        </button>
 
         {/* Invite button */}
         <button
           onClick={handleCopyInvite}
           aria-label="Copy room invite link"
-          className="h-10 px-4.5 flex items-center gap-1.5 rounded-xl bg-[#3DD6B0] hover:bg-[#34c4a1] text-[#0E1116] text-xs font-bold shadow-lg shadow-[#3DD6B0]/20 transition-all active:scale-95"
+          className="h-10 px-3.5 sm:px-4 flex items-center gap-1.5 rounded-xl bg-[#3DD6B0] hover:bg-[#34c4a1] text-[#0E1116] text-xs font-bold shadow-lg shadow-[#3DD6B0]/20 transition-all active:scale-95"
+          title="Copy invite URL"
         >
-          {copied ? <Check size={14} /> : <Copy size={14} />}
-          <span>{copied ? "Copied" : "Invite"}</span>
+          {copiedInvite ? <Check size={14} /> : <Share2 size={14} />}
+          <span>{copiedInvite ? "Copied" : "Invite"}</span>
         </button>
 
         {/* Camera toggle button */}

@@ -11,6 +11,7 @@ type RoomLookup = {
   name: string | null;
   room_code: string;
   is_active: boolean | null;
+  room_type?: string | null;
 };
 
 export default function JoinByCodePage() {
@@ -30,7 +31,7 @@ export default function JoinByCodePage() {
       setLoading(true);
       const { data, error: roomError } = await supabase
         .from("rooms")
-        .select("id, name, room_code, is_active")
+        .select("id, name, room_code, is_active, room_type")
         .eq("room_code", code)
         .maybeSingle();
 
@@ -56,6 +57,20 @@ export default function JoinByCodePage() {
       setLoading(false);
     }
   }, [code]);
+
+  const parsedRoomMeta = useMemo(() => {
+    if (!room?.name) return { title: "Untitled Room", isStudy: room?.room_type === "study" };
+    if (room.name.startsWith("{")) {
+      try {
+        const meta = JSON.parse(room.name);
+        return {
+          title: meta.title || "Workspace",
+          isStudy: meta.roomType === "study" || room.room_type === "study",
+        };
+      } catch (_) {}
+    }
+    return { title: room.name, isStudy: room.room_type === "study" };
+  }, [room]);
 
   async function joinRoom() {
     if (!room) return;
@@ -84,7 +99,12 @@ export default function JoinByCodePage() {
     }
 
     if (!session?.user?.id) localStorage.setItem("guest_name", safeName);
-    router.push(`/room/${result.roomId}`);
+    
+    if (result.roomType === "study" || parsedRoomMeta.isStudy) {
+      router.push(`/study/${result.roomId}`);
+    } else {
+      router.push(`/room/${result.roomId}`);
+    }
   }
 
   return (
@@ -97,9 +117,15 @@ export default function JoinByCodePage() {
           </div>
         ) : room ? (
           <div className="rounded-2xl border border-[#1f1f1f] bg-[#111111] p-6">
-            <h1 className="text-2xl font-bold">Join Room</h1>
-            <p className="mt-1 text-gray-400">
-              Room: {room.name || "Untitled"} · Code: {room.room_code}
+            <div className="flex items-center gap-2 mb-2">
+              <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${parsedRoomMeta.isStudy ? 'bg-[#12342E] text-[#3DD6B0] border border-[#1F5A4D]' : 'bg-white/10 text-white'}`}>
+                {parsedRoomMeta.isStudy ? "Study Hub Room" : "Coding Workspace"}
+              </span>
+              <span className="font-mono text-xs text-gray-400">Code: #{room.room_code}</span>
+            </div>
+            <h1 className="text-2xl font-bold">{parsedRoomMeta.title}</h1>
+            <p className="mt-1 text-gray-400 text-sm">
+              {parsedRoomMeta.isStudy ? "Collaborative study room with focus timer, whiteboard, notes & media." : "Collaborative coding workspace with live editor and terminal."}
             </p>
 
             <GuestJoinSection displayName={displayName} setDisplayName={setDisplayName} />
@@ -117,9 +143,13 @@ export default function JoinByCodePage() {
             <button
               onClick={joinRoom}
               disabled={joining}
-              className="mt-5 rounded-lg bg-white px-5 py-2 font-semibold transition hover:bg-[#6d28d9] disabled:opacity-70"
+              className={`mt-5 rounded-lg px-6 py-2.5 font-bold transition disabled:opacity-70 ${
+                parsedRoomMeta.isStudy
+                  ? "bg-[#3DD6B0] hover:bg-[#34c4a1] text-[#0E1116] shadow-lg shadow-[#3DD6B0]/20"
+                  : "bg-white hover:bg-gray-200 text-black"
+              }`}
             >
-              {joining ? "Joining..." : "Join Room"}
+              {joining ? "Joining..." : parsedRoomMeta.isStudy ? "Join Study Room →" : "Join Workspace →"}
             </button>
           </div>
         ) : (

@@ -126,9 +126,12 @@ export default function StudyRoomPage() {
     currentUser?.email?.split("@")[0] ||
     "You";
 
+  const canonicalRoomId = roomData?.id || roomId;
+  const canonicalRoomCode = roomData?.room_code || roomId;
+
   // Reliable Realtime client hook
   const realtime = useStudyRealtime({
-    roomId,
+    roomId: canonicalRoomId,
     userId: currentUserId,
     userName: currentUserName,
   });
@@ -147,7 +150,7 @@ export default function StudyRoomPage() {
 
   // Mediasoup SFU hook
   const sfu = useMediasoup({
-    roomId,
+    roomId: canonicalRoomId,
     userId: currentUserId,
     userName: currentUserName,
     autoJoin: false,
@@ -269,7 +272,7 @@ export default function StudyRoomPage() {
       {/* 2. Floating Top Bar */}
       <StudySceneTopBar
         roomName={roomData?.name || "Study Room"}
-        roomCode={roomData?.room_code || roomId}
+        roomCode={canonicalRoomCode}
         currentUser={currentUser}
         cameraActive={activePanels.video}
         onToggleCamera={() => togglePanel("video")}

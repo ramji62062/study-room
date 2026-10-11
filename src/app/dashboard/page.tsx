@@ -190,12 +190,12 @@ export default function DashboardPage() {
   const [createWorkspaceAccessCode, setCreateWorkspaceAccessCode] = useState("");
 
   // Tab State
-  const [activeTab, setActiveTab] = useState<"workspaces" | "shared_library" | "private_library" | "community" | "account" | "progress">("workspaces");
+  const [activeTab, setActiveTab] = useState<"workspaces" | "study_hub" | "shared_library" | "private_library" | "community" | "account" | "progress">("workspaces");
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const tab = params.get("tab");
-    if (tab === "workspaces" || tab === "shared_library" || tab === "private_library" || tab === "community" || tab === "account" || tab === "progress") {
+    if (tab === "workspaces" || tab === "study_hub" || tab === "shared_library" || tab === "private_library" || tab === "community" || tab === "account" || tab === "progress") {
       setActiveTab(tab as any);
     }
   }, []);
@@ -370,6 +370,37 @@ export default function DashboardPage() {
       alert(room.error || "Failed to create workspace.");
     }
     setCreating(false);
+  }
+
+  async function launchSceneStudyRoom(sceneName: string) {
+    if (!user) return;
+    setCreating(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`;
+
+      const res = await fetch("/api/create-room", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          roomName: `${sceneName} Study Room`,
+          language: "typescript",
+          roomType: "study",
+          isPrivate: false,
+        }),
+      });
+      const room = await res.json();
+      if (res.ok && room.id) {
+        router.push(`/study/${room.id}`);
+      } else {
+        alert(room.error || "Failed to create study room.");
+      }
+    } catch (_) {
+      alert("Error creating study room.");
+    } finally {
+      setCreating(false);
+    }
   }
 
   async function handleJoin() {
@@ -822,6 +853,12 @@ function WorkspaceCard({
             My Workspaces
           </button>
           <button
+            onClick={() => setActiveTab("study_hub")}
+            className={tabClass("study_hub")}
+          >
+            📚 Study Hub
+          </button>
+          <button
             onClick={() => setActiveTab("shared_library")}
             className={tabClass("shared_library")}
           >
@@ -1019,6 +1056,267 @@ function WorkspaceCard({
               )}
             </div>
           </>
+        )}
+
+        {activeTab === "study_hub" && (
+          <div className="animate-slide-up delay-200 flex flex-col gap-[32px]">
+            {/* Header Banner */}
+            <div className="glass-panel rounded-[20px] p-[28px] border border-[#1F5A4D]/50 bg-gradient-to-r from-[#12342E]/60 via-[#141920] to-[#0E1116] flex flex-wrap items-center justify-between gap-[20px]">
+              <div>
+                <div className="flex items-center gap-[10px] mb-2">
+                  <div className="w-9 h-9 rounded-xl bg-[#1F5A4D] flex items-center justify-center text-[#3DD6B0]">
+                    <BookOpen size={18} />
+                  </div>
+                  <h2 className="text-[24px] font-black text-white m-0">Atmospheric Study Hub</h2>
+                  <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-[#12342E] text-[#3DD6B0] border border-[#1F5A4D]">
+                    5-Seat Cohorts
+                  </span>
+                </div>
+                <p className="text-[14px] text-[#8B97A7] max-w-2xl m-0 leading-relaxed">
+                  Distraction-free focus environments with synchronized Pomodoro timers, 6 immersive ambient soundscapes, collaborative whiteboard & private notes, and low-latency Mediasoup SFU media.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => {
+                    setCreateRoomMode("study");
+                    setShowCreateModal(true);
+                  }}
+                  className="px-5 py-2.5 rounded-xl bg-[#3DD6B0] hover:bg-[#34c4a1] text-[#0E1116] font-bold text-xs sm:text-sm flex items-center gap-2 transition-all shadow-lg shadow-[#3DD6B0]/20 active:scale-95 cursor-pointer"
+                >
+                  <Plus size={16} /> + New Study Room
+                </button>
+                <button
+                  onClick={() => launchSceneStudyRoom("Night Library")}
+                  className="px-5 py-2.5 rounded-xl bg-[#141920] hover:bg-[#1C232D] text-[#E6EDF3] border border-[#2B3340] font-bold text-xs sm:text-sm flex items-center gap-2 transition-all cursor-pointer"
+                >
+                  <Zap size={15} className="text-[#F2B84B]" /> Quick Focus Session
+                </button>
+              </div>
+            </div>
+
+            {/* Quick Action Cards Row */}
+            <div className="gap-[16px]" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))" }}>
+              {/* Join via Code Card */}
+              <div className="glass-panel hover-card-glow rounded-[20px] p-[24px] border border-[#2B3340]/60">
+                <div className="flex items-center gap-[10px] mb-3">
+                  <div className="w-9 h-9 rounded-xl bg-[#1C232D] flex items-center justify-center text-[#82AAFF] border border-[#2B3340]">
+                    <Hash size={18} />
+                  </div>
+                  <div>
+                    <h3 className="text-[16px] font-bold text-white m-0">Join Study Room</h3>
+                    <p className="text-[11px] text-[#8B97A7] m-0">Enter a 6-character room code</p>
+                  </div>
+                </div>
+                <input
+                  value={joinInput}
+                  onChange={(e) => setJoinInput(e.target.value.toUpperCase())}
+                  onKeyDown={(e) => e.key === "Enter" && handleJoin()}
+                  placeholder="e.g. FOCUS1 or XK9P2M"
+                  className="w-full rounded-xl p-2.5 text-[14px] font-mono font-bold bg-[#0E1116] border border-[#2B3340] text-white tracking-widest outline-none focus:border-[#3DD6B0] mb-2.5 box-border"
+                />
+                <input
+                  value={joinAccessCode}
+                  onChange={(e) => setJoinAccessCode(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleJoin()}
+                  placeholder="Access code (if room is private)"
+                  className="w-full rounded-xl p-2.5 text-[12px] bg-[#0E1116] border border-[#2B3340] text-white outline-none focus:border-[#3DD6B0] mb-3 box-border"
+                />
+                {joinError && <p className="text-[12px] text-red-400 mb-2">{joinError}</p>}
+                <button
+                  onClick={handleJoin}
+                  className="w-full py-2.5 rounded-xl text-[13px] font-bold bg-[#12342E] hover:bg-[#1a4a42] text-[#3DD6B0] border border-[#1F5A4D] transition-all cursor-pointer flex items-center justify-center gap-2"
+                >
+                  Enter Study Room →
+                </button>
+              </div>
+
+              {/* Study Cohort Specs Card */}
+              <div className="glass-panel hover-card-glow rounded-[20px] p-[24px] border border-[#2B3340]/60">
+                <h3 className="text-[12px] font-extrabold text-[#8B97A7] uppercase tracking-wider mb-3">Study Cohort Rules</h3>
+                {[
+                  { label: "Cohort Capacity", value: "Strict 5-Seat Limit", color: "#3DD6B0" },
+                  { label: "Session Duration", value: "45-Minute Focus Blocks", color: "#F2B84B" },
+                  { label: "Code Execution", value: "Browser-Only (No Terminal)", color: "#82AAFF" },
+                  { label: "Media Engine", value: "Mediasoup SFU Active", color: "#C792EA" },
+                ].map((item) => (
+                  <div key={item.label} className="flex justify-between items-center py-2 border-b border-[#232A35]">
+                    <span className="text-[12px] text-[#8B97A7]">{item.label}</span>
+                    <span className="text-[12px] font-bold" style={{ color: item.color }}>{item.value}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Quick Preset Launch Card */}
+              <div className="glass-panel hover-card-glow rounded-[20px] p-[24px] border border-[#2B3340]/60 flex flex-col justify-between">
+                <div>
+                  <h3 className="text-[12px] font-extrabold text-[#8B97A7] uppercase tracking-wider mb-2">Focus Soundscapes</h3>
+                  <p className="text-[12px] text-[#8B97A7] mb-3">Launch directly into pre-configured soundscapes with looped ambient audio:</p>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <button
+                    onClick={() => launchSceneStudyRoom("Night Library")}
+                    className="w-full py-2 px-3 rounded-lg bg-[#0E1116] hover:bg-[#1C232D] border border-[#2B3340] text-xs font-semibold text-white flex items-center justify-between transition-colors cursor-pointer"
+                  >
+                    <span>🌙 Night Library</span>
+                    <span className="text-[#3DD6B0] text-[11px]">Launch →</span>
+                  </button>
+                  <button
+                    onClick={() => launchSceneStudyRoom("Rainy Cafe")}
+                    className="w-full py-2 px-3 rounded-lg bg-[#0E1116] hover:bg-[#1C232D] border border-[#2B3340] text-xs font-semibold text-white flex items-center justify-between transition-colors cursor-pointer"
+                  >
+                    <span>☕ Rainy Cafe</span>
+                    <span className="text-[#3DD6B0] text-[11px]">Launch →</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* My Study Rooms List */}
+            <div>
+              <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+                <div>
+                  <h3 className="text-[20px] font-black text-white m-0">My Study Rooms</h3>
+                  <p className="text-[12px] text-[#8B97A7] mt-0.5">Rooms configured for focus sessions, notes, whiteboard & pomodoro</p>
+                </div>
+                <button
+                  onClick={() => {
+                    setCreateRoomMode("study");
+                    setShowCreateModal(true);
+                  }}
+                  className="px-3.5 py-1.5 rounded-lg bg-[#12342E] text-[#3DD6B0] border border-[#1F5A4D] text-xs font-bold hover:bg-[#1a4a42] transition-colors cursor-pointer flex items-center gap-1.5"
+                >
+                  <Plus size={14} /> Create Room
+                </button>
+              </div>
+
+              {(() => {
+                const userStudyRooms = rooms.filter((r) => {
+                  const meta = getRoomMeta(r.name);
+                  return meta.roomType === "study" || (r as any).room_type === "study";
+                });
+
+                if (userStudyRooms.length === 0) {
+                  return (
+                    <div className="rounded-2xl border border-dashed border-[#2B3340] bg-[#0E1116] p-10 text-center">
+                      <BookOpen size={40} className="mx-auto mb-3 text-[#3DD6B0] opacity-60" />
+                      <h4 className="text-base font-bold text-white mb-1">No Study Rooms Created Yet</h4>
+                      <p className="text-xs text-[#8B97A7] max-w-md mx-auto mb-5">
+                        Create your dedicated study room with ambient soundscapes, focus timer, whiteboard, and private notes.
+                      </p>
+                      <button
+                        onClick={() => {
+                          setCreateRoomMode("study");
+                          setShowCreateModal(true);
+                        }}
+                        className="px-5 py-2.5 rounded-xl bg-[#3DD6B0] hover:bg-[#34c4a1] text-[#0E1116] font-bold text-xs transition-all shadow-md cursor-pointer"
+                      >
+                        + Create Your First Study Room
+                      </button>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="gap-[16px]" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(290px, 1fr))" }}>
+                    {userStudyRooms.map((room) => {
+                      const displayName = getRoomDisplayName(room.name);
+                      return (
+                        <div
+                          key={room.id}
+                          className="glass-panel hover-card-glow rounded-[18px] p-5 border border-[#1F5A4D]/60 flex flex-col justify-between gap-4 transition-all hover:border-[#3DD6B0]"
+                        >
+                          <div>
+                            <div className="flex items-start justify-between mb-2">
+                              <div>
+                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#12342E] text-[#3DD6B0] border border-[#1F5A4D]">
+                                  📚 Study Room
+                                </span>
+                                <h4 className="text-[16px] font-extrabold text-white mt-2 truncate" title={displayName}>
+                                  {displayName}
+                                </h4>
+                              </div>
+                              <button
+                                onClick={() => handleDelete(room.id)}
+                                className="text-gray-500 hover:text-red-400 p-1 rounded-md transition-colors cursor-pointer"
+                                title="Delete study room"
+                              >
+                                <Trash2 size={15} />
+                              </button>
+                            </div>
+                            <p className="text-[11px] text-[#8B97A7] m-0">Max 5 seats · Pomodoro Focus & Whiteboard</p>
+                          </div>
+
+                          <div className="flex items-center justify-between border-t border-[#232A35] pt-3">
+                            {/* Room Code Badge with Copy button */}
+                            <div className="flex items-center gap-1.5 bg-[#0E1116] border border-[#2B3340] rounded-lg px-2.5 py-1">
+                              <Hash size={11} className="text-[#8B97A7]" />
+                              <span className="font-mono text-xs font-bold text-[#82AAFF] tracking-wider">{room.room_code}</span>
+                              <button
+                                onClick={() => copyCode(room.room_code)}
+                                className="text-[#8B97A7] hover:text-[#3DD6B0] p-0.5 transition-colors cursor-pointer"
+                                title="Copy room code"
+                              >
+                                {copiedCode === room.room_code ? <Check size={12} className="text-[#3DD6B0]" /> : <Copy size={12} />}
+                              </button>
+                            </div>
+
+                            <span className="text-[11px] text-[#8B97A7]">
+                              {new Date(room.created_at).toLocaleDateString()}
+                            </span>
+                          </div>
+
+                          <button
+                            onClick={() => router.push(`/study/${room.id}`)}
+                            className="w-full py-2.5 rounded-xl bg-[#3DD6B0] hover:bg-[#34c4a1] text-[#0E1116] font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-md active:scale-95 cursor-pointer"
+                          >
+                            <BookOpen size={14} /> Enter Study Room →
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Atmospheric Soundscapes Showcase */}
+            <div>
+              <div className="mb-4">
+                <h3 className="text-[20px] font-black text-white m-0">Atmospheric Soundscapes</h3>
+                <p className="text-[12px] text-[#8B97A7] mt-0.5">Explore the built-in ambient environments available in every study room</p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {[
+                  { name: "Night Library", subtitle: "Warm lamplight, rain on windows, soft clock ticking", emoji: "🌙" },
+                  { name: "Rainy Cafe", subtitle: "Lo-Fi beats, soft rain against glass, gentle chatter", emoji: "☕" },
+                  { name: "Forest", subtitle: "Breeze in pine canopies, distant birdsong, gentle leaves", emoji: "🌲" },
+                  { name: "Seaside", subtitle: "Rolling ocean waves, distant seabirds, salty breeze", emoji: "🌊" },
+                  { name: "Snow Cabin", subtitle: "Crackling wood fireplace, muffled wind, falling snow", emoji: "❄️" },
+                  { name: "Tokyo Loft", subtitle: "City rain reflections, warm neon glow, ambient lo-fi", emoji: "🏙️" },
+                ].map((scene) => (
+                  <div
+                    key={scene.name}
+                    className="rounded-2xl border border-[#2B3340]/70 bg-[#141920] p-4 flex flex-col justify-between gap-3 shadow-md hover:border-[#3DD6B0] transition-all"
+                  >
+                    <div>
+                      <div className="text-2xl mb-1.5">{scene.emoji}</div>
+                      <h4 className="text-sm font-bold text-white mb-1">{scene.name}</h4>
+                      <p className="text-xs text-[#8B97A7] leading-relaxed">{scene.subtitle}</p>
+                    </div>
+                    <button
+                      onClick={() => launchSceneStudyRoom(scene.name)}
+                      className="w-full py-2 rounded-xl bg-[#0E1116] hover:bg-[#1F5A4D] text-[#3DD6B0] border border-[#1F5A4D] font-bold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      Launch with this Scene →
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
         )}
 
         {activeTab === "shared_library" && (
